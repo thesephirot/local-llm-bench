@@ -12,6 +12,14 @@ uv sync
 .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 9090
 ```
 
+Or use the CLI entry point (available after `uv sync`):
+
+```bash
+llm-bench
+```
+
+> The `llm-bench` command is defined in `pyproject.toml` as `[project.scripts]` and delegates to `app.main:main`.
+
 Then open **http://localhost:9090** in your browser.
 
 ### Background mode
@@ -28,36 +36,179 @@ nohup .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 9090 > /tmp/uvicorn.l
 - **Live streaming** — measures time-to-first-token, total time, and tokens/second
 - **Result history** — all runs persisted in SQLite
 - **Dark-themed UI** — single-page app with Tailwind CSS
+- **Swap Configs (LlamaSwap-style)** — save named configurations bundling endpoint, model, preset, and parameters for one-click re-runs
+- **Compare mode** — select ≥2 past results and compare latency, token count, and throughput side by side
+- **Charts & Trends** — time-series visualization of benchmark metrics, groupable by day or hour
+- **Custom presets** — create, edit, and delete benchmark prompts beyond the 5 shipped presets
+- **CLI entry point** — run `llm-bench` after installation to start the dashboard directly
 
 ## Architecture
 
 ```
 ├── app/
 │   ├── main.py        # FastAPI routes + benchmark runner
-│   ├── database.py    # SQLite layer (endpoints + results)
+│   ├── database.py    # SQLite layer (endpoints, results, presets, swap_configs)
 │   └── models.py      # Data classes
 ├── static/
-│   └── index.html     # Frontend (Tailwind CSS, no build step)
+│   ├── index.html     # Frontend (Tailwind CSS, no build step)
+│   └── app.js         # Frontend logic
 ├── benchmarks.db      # Auto-created SQLite database
-└── pyproject.toml     # Dependencies (uv)
+├── pyproject.toml     # Dependencies (uv) + CLI entry point (`llm-bench`)
+└── uv.lock            # Locked dependency versions
 ```
+
+### Database
+
+The application uses a single SQLite file (`benchmarks.db`), auto-created on first run. Four tables are managed:
+
+| Table | Description |
+|---|---|
+| `endpoints` | Saved API endpoint configurations |
+| `results` | Benchmark run history with timing and token metrics |
+| `presets` | User-defined and seeded benchmark prompts (5 shipped) |
+| `swap_configs` | Named LlamaSwap-style saved configurations |
+
+No migration system is used; schema changes are handled via inline `ALTER TABLE` with graceful failure on duplicate columns.
 
 ## API Endpoints
 
+### Presets
+
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/` | Dashboard UI |
 | `GET` | `/api/presets` | List benchmark presets |
+| `POST` | `/api/presets` | Create a new preset |
+| `PUT` | `/api/presets/{preset_id}` | Update an existing preset |
+| `DELETE` | `/api/presets/{preset_id}` | Delete a preset |
+
+### Endpoints
+
+| Method | Path | Description |
+|---|---|---|
 | `GET` | `/api/endpoints` | List saved endpoints |
-| `POST` | `/api/endpoints` | Create endpoint |
-| `PUT` | `/api/endpoints/:id` | Update endpoint |
-| `DELETE` | `/api/endpoints/:id` | Delete endpoint |
-| `GET` | `/api/models?endpoint_id=…` | Fetch models from endpoint |
+| `POST` | `/api/endpoints` | Create an endpoint |
+| `PUT` | `/api/endpoints/{ep_id}` | Update an endpoint |
+| `DELETE` | `/api/endpoints/{ep_id}` | Delete an endpoint |
+
+### Models
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/models?endpoint_id=…` | Fetch available models from an endpoint |
+
+### Swap Configs
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/swap-configs` | List saved swap configurations |
+| `POST` | `/api/swap-configs` | Create a swap configuration |
+| `PUT` | `/api/swap-configs/{cfg_id}` | Update a swap configuration |
+| `DELETE` | `/api/swap-configs/{cfg_id}` | Delete a swap configuration |
+
+### Benchmark
+
+| Method | Path | Description |
+|---|---|---|
 | `POST` | `/api/run` | Run a benchmark |
-| `GET` | `/api/results` | List past results |
-| `DELETE` | `/api/results/:id` | Delete a result |
+
+### Results
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/results` | List past results (filterable) |
+| `GET` | `/api/results/{result_id}` | Get a single result by ID |
+| `DELETE` | `/api/results/{result_id}` | Delete a result |
+| `DELETE` | `/api/results` | Delete all results |
+
+### History
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/history` | Compact result history (filterable, no prompt/response bodies) |
+
+### Compare
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/compare` | Compare ≥2 results side by side |
+
+### Summary & Trends
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/summary` | Aggregate summary statistics |
+| `GET` | `/api/latest` | 20 most recent results (compact) |
+| `GET` | `/api/trends` | Time-series trend data, groupable by day or hour |
+| `GET` | `/api/best-worst` | Best and worst runs across key metrics |
+
+## Query Parameters
+
+### `/api/results` and `/api/history`
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `limit` | int | `200` | Maximum number of results to return |
+| `model` | str | — | Filter by model name |
+| `preset` | str | — | Filter by preset name |
+| `from_date` | str (ISO) | — | Include results on or after this date |
+| `to_date` | str (ISO) | — | Include results on or before this date |
+
+`/api/history` additionally accepts `endpoint` (str) to filter by endpoint ID.
+
+### `/api/trends`
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `model` | str | — | Filter by model name |
+| `preset` | str | — | Filter by preset name |
+| `endpoint` | str | — | Filter by endpoint ID |
+| `from_date` | str (ISO) | — | Include results on or after this date |
+| `to_date` | str (ISO) | — | Include results on or before this date |
+| `group_by` | str | `day` | Group results by `day` or `hour` |
+
+### `/api/models`
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `endpoint_id` | str | Yes | ID of the endpoint to fetch models from |
+
+## Benchmark Run
+
+### Request
+
+`POST /api/run` accepts a JSON body:
+
+```json
+{
+  "endpoint_id": "abc-123",
+  "model": "gpt-4",
+  "preset": "code",
+  "max_tokens": 2048,
+  "temperature": 0.7
+}
+```
+
+### Response
+
+The response is the full `BenchmarkResult` object, including:
+
+- `total_time_ms` — total request duration in milliseconds
+- `time_to_first_token_ms` — time until the first token was received
+- `tokens_per_second` — generation throughput (excludes prompt processing time)
+- `completion_tokens` — number of generated tokens
+- `prompt_tokens` — number of prompt tokens
+- `output_length` — character length of the generated output
 
 ## Requirements
 
 - Python 3.11+
 - [`uv`](https://github.com/astral-sh/uv) for dependency management
+
+### Dependencies
+
+| Package | Version | Purpose |
+|---|---|---|
+| `fastapi` | `>=0.115` | Web framework |
+| `uvicorn[standard]` | `>=0.34` | ASGI server |
+| `httpx` | `>=0.28` | Async HTTP client for LLM calls |
+| `pydantic` | `>=2.10` | Request/response validation |
