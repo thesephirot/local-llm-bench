@@ -268,6 +268,27 @@ async def get_results(
     return db.list_results_filter(limit, model, preset, from_date, to_date)
 
 
+@app.get("/api/history")
+async def get_history(
+    limit: int = 200,
+    model: str | None = None,
+    preset: str | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+):
+    """Compact listing for the history table — no prompt/response bodies."""
+    return db.list_results_history(limit, model, preset, from_date, to_date)
+
+
+@app.get("/api/results/{result_id}")
+async def get_result(result_id: str):
+    """Fetch a single result with full details."""
+    result = db.get_result(result_id)
+    if not result:
+        raise HTTPException(404, "Result not found")
+    return result
+
+
 @app.get("/api/summary")
 async def get_summary():
     return db.get_summary()

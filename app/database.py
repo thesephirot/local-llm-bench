@@ -163,12 +163,59 @@ def list_results_compact(limit: int = 200) -> list[dict]:
             """
             SELECT id, endpoint_name, model, preset_name,
                    total_time_ms, tokens_per_second, completion_tokens,
-                   prompt_tokens, created_at
+                   prompt_tokens, output_length, created_at
             FROM results
             ORDER BY created_at DESC LIMIT ?
             """, (limit,)
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def list_results_history(
+    limit: int = 200,
+    model: str | None = None,
+    preset: str | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+) -> list[dict]:
+    """Compact listing for the history table — no prompt/response bodies."""
+    conditions = []
+    params: list = []
+    if model:
+        conditions.append("model = ?")
+        params.append(model)
+    if preset:
+        conditions.append("preset_name = ?")
+        params.append(preset)
+    if from_date:
+        conditions.append("created_at >= ?")
+        params.append(from_date)
+    if to_date:
+        conditions.append("created_at <= ?")
+        params.append(to_date)
+    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    params.append(limit)
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT id, endpoint_id, endpoint_name, model, preset_name,
+                   total_time_ms, time_to_first_token_ms, tokens_per_second,
+                   completion_tokens, output_length, created_at
+            FROM results{where}
+            ORDER BY created_at DESC LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_result(result_id: str) -> dict | None:
+    """Fetch a single result with full prompt/response."""
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM results WHERE id = ?", (result_id,)).fetchone()
+    if row is None:
+        return None
+    return dict(row)
 
 
 # ── Summary statistics ─────────────────────────────────────

@@ -9,7 +9,7 @@ const fmtNum=v=>v!=null&&v!==''?Number(v).toLocaleString():'—';
 const fmtDec=(v,d=1)=>v!=null?v.toFixed(d):'—';
 const api=(path,opts={})=>fetch(path,{headers:{'Content-Type':'application/json'},...opts}).then(async r=>{if(!r.ok)throw new Error(`${r.status}: ${await r.text()}`);return r.json()});
 
-(async()=>{await loadPresets();await loadEndpoints()})();
+(async()=>{await loadPresets();await loadEndpoints();checkReady();})();
 
 function switchTab(name){
   document.querySelectorAll('.tab-panel').forEach(p=>p.classList.add('hidden'));
@@ -34,7 +34,7 @@ async function loadPresets(){
 }
 function selectPreset(key){
   selectedPreset=key;
-  document.querySelectorAll('.preset-btn').forEach(b=>{b.classList.toggle('bg-surface-300',b.dataset.key===key);b.classList.toggle('ring-1 ring-cyan-500',b.dataset.key===key)});
+  document.querySelectorAll('.preset-btn').forEach(b=>{const m=b.dataset.key===key;b.classList.toggle('bg-surface-300',m);b.classList.toggle('ring-1',m);b.classList.toggle('ring-cyan-500',m)});
   $('selPreset').value=key;checkReady();
 }
 
@@ -51,9 +51,11 @@ async function loadEndpoints(){
     list.appendChild(div);
     const opt=document.createElement('option');opt.value=ep.id;opt.textContent=ep.name;sel.appendChild(opt);
   }
+  checkReady();
 }
 function selEndpoint(id){$('selEndpoint').value=id;onEndpointChange()}
 function onEndpointChange(){$('selModel').innerHTML='<option value="">— select model —</option>';loadModels();checkReady()}
+function triggerCheckReady(){requestAnimationFrame(checkReady)}
 
 function showEndpointModal(id){
   $('endpointModal').classList.remove('hidden');
@@ -64,7 +66,7 @@ async function saveEndpoint(){
   const id=$('epId').value,body={name:$('epName').value,base_url:$('epUrl').value,api_key:$('epKey').value,extra_headers:$('epHeaders').value};
   if(id){body.id=id;await api('/api/endpoints/'+id,{method:'PUT',body:JSON.stringify(body)})}
   else await api('/api/endpoints',{method:'POST',body:JSON.stringify(body)});
-  $('endpointModal').classList.add('hidden');await loadEndpoints();
+  $('endpointModal').classList.add('hidden');await loadEndpoints();checkReady();
 }
 async function editEndpoint(id){
   const ep=(await api('/api/endpoints')).find(e=>e.id===id);if(!ep)return;
@@ -84,8 +86,12 @@ async function loadModels(){
   sel.onchange=checkReady;checkReady();
 }
 function checkReady(){
-  const r=$('selEndpoint').value&&$('selModel').value&&$('selPreset').value;
-  $('btnRun').disabled=!r||running;
+  const ep=$('selEndpoint')?.value||'';
+  const md=$('selModel')?.value||'';
+  const ps=$('selPreset')?.value||'';
+  const r=ep&&md&&ps;
+  const btn=$('btnRun');
+  if(btn)btn.disabled=!r||running;
 }
 
 async function runBenchmark(){
@@ -118,7 +124,7 @@ async function loadHistory(){
   const params=new URLSearchParams();
   const fm=$('filterModel')?.value,fp=$('filterPreset')?.value,fd=$('filterFrom')?.value,td=$('filterTo')?.value;
   if(fm)params.set('model',fm);if(fp)params.set('preset',fp);if(fd)params.set('from_date',fd);if(td)params.set('to_date',td);
-  allResults=await api('/api/results?'+params.toString());
+  allResults=await api('/api/history?'+params.toString());
   populateFilters();renderHistoryTable();
 }
 function populateFilters(){
@@ -180,8 +186,8 @@ function renderHistoryTable(){
   </div>`;
 }
 function handleSort(col){if(sortCol===col)sortDir=sortDir==='asc'?'desc':'asc';else{sortCol=col;sortDir='desc'}renderHistoryTable()}
-function showDetail(id){
-  const r=allResults.find(x=>x.id===id);if(!r)return;
+async function showDetail(id){
+  const r=await api('/api/results/'+id);
   $('detailTitle').textContent=r.endpoint_name+' / '+r.model;
   $('detailMeta').textContent=r.preset_name+' · '+fmt(r.created_at);
   const stats=[{l:'TTFT',v:fmtMs(r.time_to_first_token_ms)},{l:'Total',v:fmtSec(r.total_time_ms)},{l:'Tok/s',v:fmtDec(r.tokens_per_second)},{l:'Tokens',v:fmtNum(r.completion_tokens)},{l:'Output',v:(r.output_length||0).toLocaleString()+' ch'}];
@@ -196,9 +202,9 @@ async function clearAllResults(){if(!confirm('Clear all benchmark results?'))ret
 async function loadCharts(){
   const summary=await api('/api/summary');
   const latest=await api('/api/latest');
-  renderCharts(summary,latest);
+  await renderCharts(summary,latest);
 }
-function renderCharts(summary,latest){
+async function renderCharts(summary,latest){
   const panel=$('panel-charts');
   const cards=[
     {l:'Total Runs',v:summary.total_runs||0,color:'text-cyan-400'},
@@ -206,13 +212,20 @@ function renderCharts(summary,latest){
     {l:'Avg TTFT',v:summary.avg_ttfb_ms?summary.avg_ttfb_ms.toFixed(0)+' ms':'—',color:'text-green-400'},
     {l:'Avg Throughput',v:summary.avg_tps?summary.avg_tps.toFixed(1)+' tok/s':'—',color:'text-amber-400'},
   ];
+
+  // 1) Destroy old charts BEFORE touching the DOM
+  const oldCharts=Object.values(chartInstances);
+  chartInstances={};
+  oldCharts.forEach(c=>{try{c.destroy()}catch(e){}});
+
+  // 2) Build the panel (creates fresh canvas elements)
   panel.innerHTML=`<div class="max-w-7xl mx-auto space-y-4 fade-in">
     <div class="grid grid-cols-2 md:grid-cols-4 gap-3">${cards.map(c=>`<div class="bg-surface-200 border border-surface-300 rounded-xl p-4 text-center"><div class="text-2xl font-bold ${c.color}">${c.v}</div><div class="text-xs text-gray-500 mt-1">${c.l}</div></div>`).join('')}</div>
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-      <div class="bg-surface-200 border border-surface-300 rounded-xl p-4"><h3 class="text-xs font-semibold text-gray-400 uppercase mb-3">Latency by Run (ms)</h3><canvas id="chartLatency" height="220"></canvas></div>
-      <div class="bg-surface-200 border border-surface-300 rounded-xl p-4"><h3 class="text-xs font-semibold text-gray-400 uppercase mb-3">Tokens/sec by Model</h3><canvas id="chartThroughput" height="220"></canvas></div>
-      <div class="bg-surface-200 border border-surface-300 rounded-xl p-4"><h3 class="text-xs font-semibold text-gray-400 uppercase mb-3">TTFT by Run (ms)</h3><canvas id="chartTTFT" height="220"></canvas></div>
-      <div class="bg-surface-200 border border-surface-300 rounded-xl p-4"><h3 class="text-xs font-semibold text-gray-400 uppercase mb-3">Tokens by Preset</h3><canvas id="chartTokens" height="220"></canvas></div>
+      <div class="bg-surface-200 border border-surface-300 rounded-xl p-4"><h3 class="text-xs font-semibold text-gray-400 uppercase mb-3">Latency by Run (ms)</h3><canvas id="chartLatency"></canvas></div>
+      <div class="bg-surface-200 border border-surface-300 rounded-xl p-4"><h3 class="text-xs font-semibold text-gray-400 uppercase mb-3">Tokens/sec by Model</h3><canvas id="chartThroughput"></canvas></div>
+      <div class="bg-surface-200 border border-surface-300 rounded-xl p-4"><h3 class="text-xs font-semibold text-gray-400 uppercase mb-3">TTFT by Run (ms)</h3><canvas id="chartTTFT"></canvas></div>
+      <div class="bg-surface-200 border border-surface-300 rounded-xl p-4"><h3 class="text-xs font-semibold text-gray-400 uppercase mb-3">Tokens by Preset</h3><canvas id="chartTokens"></canvas></div>
     </div>
     <div class="bg-surface-200 border border-surface-300 rounded-xl p-4"><h3 class="text-xs font-semibold text-gray-400 uppercase mb-3">Model Comparison</h3>
       <div class="overflow-x-auto"><table class="w-full text-sm"><thead><tr class="border-b border-surface-300">
@@ -224,30 +237,61 @@ function renderCharts(summary,latest){
       </tr></thead><tbody id="modelStatsBody" class="divide-y divide-surface-300/50"></tbody></table></div></div>
   </div>`;
 
-  Object.values(chartInstances).forEach(c=>c.destroy());chartInstances={};
-  if(!latest?.length)return;
-  const reversed=[...latest].reverse();
-  const colors=['#06b6d4','#f59e0b','#ef4444','#22c55e','#8b5cf6','#ec4899','#3b82f6','#14b8a6'];
-  const labels=reversed.map(r=>r.model.split('/').pop().substring(0,12));
-  const baseOpts={responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:'#9ca3af',font:{size:11}}}},scales:{x:{ticks:{color:'#6b7280',font:{size:10}},grid:{color:'#1e293b'}},y:{ticks:{color:'#6b7280',font:{size:10}},grid:{color:'#1e293b'}}}};
+  // 3) Force a frame so the browser layouts the new canvases
+  await new Promise(r=>requestAnimationFrame(r));
 
-  chartInstances.latency=new Chart(document.getElementById('chartLatency').getContext('2d'),{type:'bar',data:{labels,datasets:[{label:'Latency (ms)',data:reversed.map(r=>r.total_time_ms),backgroundColor:'rgba(6,182,212,0.6)',borderColor:'#06b6d4',borderWidth:1}]},options:baseOpts});
-
-  // Group throughput by model
-  const modelTps={};reversed.forEach(r=>{if(!modelTps[r.model])modelTps[r.model]=[];modelTps[r.model].push(r.tokens_per_second)});
-  const tpsModels=Object.keys(modelTps),tpsAvgs=tpsModels.map(m=>modelTps[m].reduce((a,b)=>a+b,0)/modelTps[m].length);
-  chartInstances.throughput=new Chart(document.getElementById('chartThroughput').getContext('2d'),{type:'bar',data:{labels:tpsModels.map(m=>m.split('/').pop().substring(0,16)),datasets:[{label:'Avg Tok/s',data:tpsAvgs,backgroundColor:tpsModels.map((_,i)=>colors[i%colors.length]),borderWidth:0}]},options:baseOpts});
-
-  chartInstances.ttfb=new Chart(document.getElementById('chartTTFT').getContext('2d'),{type:'line',data:{labels,datasets:[{label:'TTFT (ms)',data:reversed.map(r=>r.time_to_first_token_ms||r.total_time_ms),borderColor:'#22c55e',backgroundColor:'rgba(34,197,94,0.1)',fill:true,tension:0.3,pointRadius:3,pointBackgroundColor:'#22c55e'}]},options:baseOpts});
-
-  // Group tokens by preset
-  const presetTokens={};reversed.forEach(r=>{if(!presetTokens[r.preset_name])presetTokens[r.preset_name]=[];presetTokens[r.preset_name].push(r.completion_tokens)});
-  const tokPresets=Object.keys(presetTokens),tokAvgs=tokPresets.map(p=>presetTokens[p].reduce((a,b)=>a+b,0)/presetTokens[p].length);
-  chartInstances.tokens=new Chart(document.getElementById('chartTokens').getContext('2d'),{type:'doughnut',data:{labels:tokPresets,datasets:[{data:tokAvgs,backgroundColor:tokPresets.map((_,i)=>colors[i%colors.length]),borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:'#9ca3af',font:{size:11}},position:'bottom'}}}});
-
-  // Model stats table
+  // 4) Model stats table (no chart)
   const tbody=$('modelStatsBody');
   if(summary.model_stats?.length){
     tbody.innerHTML=summary.model_stats.map(s=>`<tr><td class="px-3 py-2 text-xs font-medium">${esc(s.model.split('/').pop())}</td><td class="px-3 py-2 text-xs text-right">${s.count}</td><td class="px-3 py-2 text-xs text-right">${s.avg_latency_ms?.toFixed(0)||0} ms</td><td class="px-3 py-2 text-xs text-right">${s.avg_ttfb_ms?.toFixed(0)||0} ms</td><td class="px-3 py-2 text-xs text-right text-cyan-400 font-medium">${s.avg_tps?.toFixed(1)||0}</td></tr>`).join('');
   }
+
+  if(!latest?.length)return;
+  const MAX_CHART_POINTS=50;
+  const reversed=[...latest].reverse().slice(0,MAX_CHART_POINTS);
+  const colors=['#06b6d4','#f59e0b','#ef4444','#22c55e','#8b5cf6','#ec4899','#3b82f6','#14b8a6'];
+  const labels=reversed.map(r=>r.model.split('/').pop().substring(0,12));
+  const baseOpts={
+    responsive:true,
+    maintainAspectRatio:false,
+    animation:false,
+    plugins:{legend:{labels:{color:'#9ca3af',font:{size:11}}}},
+    scales:{x:{ticks:{color:'#6b7280',font:{size:10}},grid:{color:'#1e293b'}},y:{ticks:{color:'#6b7280',font:{size:10}},grid:{color:'#1e293b'}}}
+  };
+
+  // Helper: get canvas, destroy any stray chart, return 2d context
+  function getCleanCtx(id){
+    const el=document.getElementById(id);
+    const existing=Chart.getChart(el);
+    if(existing)existing.destroy();
+    return el.getContext('2d');
+  }
+
+  chartInstances.latency=new Chart(getCleanCtx('chartLatency'),{
+    type:'bar',
+    data:{labels,datasets:[{label:'Latency (ms)',data:reversed.map(r=>r.total_time_ms),backgroundColor:'rgba(6,182,212,0.6)',borderColor:'#06b6d4',borderWidth:1}]},
+    options:baseOpts
+  });
+
+  const modelTps={};reversed.forEach(r=>{if(!modelTps[r.model])modelTps[r.model]=[];modelTps[r.model].push(r.tokens_per_second)});
+  const tpsModels=Object.keys(modelTps),tpsAvgs=tpsModels.map(m=>modelTps[m].reduce((a,b)=>a+b,0)/modelTps[m].length);
+  chartInstances.throughput=new Chart(getCleanCtx('chartThroughput'),{
+    type:'bar',
+    data:{labels:tpsModels.map(m=>m.split('/').pop().substring(0,16)),datasets:[{label:'Avg Tok/s',data:tpsAvgs,backgroundColor:tpsModels.map((_,i)=>colors[i%colors.length]),borderWidth:0}]},
+    options:baseOpts
+  });
+
+  chartInstances.ttfb=new Chart(getCleanCtx('chartTTFT'),{
+    type:'line',
+    data:{labels,datasets:[{label:'TTFT (ms)',data:reversed.map(r=>r.time_to_first_token_ms||r.total_time_ms),borderColor:'#22c55e',backgroundColor:'rgba(34,197,94,0.1)',fill:true,tension:0.3,pointRadius:3,pointBackgroundColor:'#22c55e'}]},
+    options:baseOpts
+  });
+
+  const presetTokens={};reversed.forEach(r=>{if(!presetTokens[r.preset_name])presetTokens[r.preset_name]=[];presetTokens[r.preset_name].push(r.completion_tokens)});
+  const tokPresets=Object.keys(presetTokens),tokAvgs=tokPresets.map(p=>presetTokens[p].reduce((a,b)=>a+b,0)/presetTokens[p].length);
+  chartInstances.tokens=new Chart(getCleanCtx('chartTokens'),{
+    type:'doughnut',
+    data:{labels:tokPresets,datasets:[{data:tokAvgs,backgroundColor:tokPresets.map((_,i)=>colors[i%colors.length]),borderWidth:0}]},
+    options:{responsive:true,maintainAspectRatio:false,animation:false,plugins:{legend:{labels:{color:'#9ca3af',font:{size:11}},position:'bottom'}}}
+  });
 }

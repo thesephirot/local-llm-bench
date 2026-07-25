@@ -12,6 +12,7 @@
 .fade-in{animation:fadeIn .2s ease}@keyframes fadeIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
 .tab-active{border-bottom:2px solid #06b6d4;color:#06b6d4}.tab-inactive{border-bottom:2px solid transparent;color:#6b7280}.tab-inactive:hover{color:#d1d5db}
 table.sortable th{cursor:pointer;user-select:none}table.sortable th:hover{color:#06b6d4}
+canvas[id^="chart"]{width:100%!important;height:220px!important;max-height:220px!important;display:block}
 </style>
 </head>
 <body class="h-full overflow-hidden">
@@ -35,8 +36,8 @@ table.sortable th{cursor:pointer;user-select:none}table.sortable th:hover{color:
     <div id="presetList" class="space-y-1"></div>
   </div>
   <div class="p-4 border-t border-surface-300 space-y-1">
-    <button onclick="switchTab('history');loadHistory()" class="w-full text-left px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-gray-200 hover:bg-surface-300 transition-colors">📋 View History</button>
-    <button onclick="switchTab('charts');loadCharts()" class="w-full text-left px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-gray-200 hover:bg-surface-300 transition-colors">📊 View Charts</button>
+    <button onclick="switchTab('history')" class="w-full text-left px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-gray-200 hover:bg-surface-300 transition-colors">📋 View History</button>
+    <button onclick="switchTab('charts')" class="w-full text-left px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-gray-200 hover:bg-surface-300 transition-colors">📊 View Charts</button>
   </div>
 </aside>
 
