@@ -16,6 +16,30 @@ class EndpointConfig:
 
 
 @dataclass
+class PromptPreset:
+    id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    key: str = ""
+    name: str = ""
+    prompt: str = ""
+    description: str = ""
+
+
+@dataclass
+class LlamaSwapConfig:
+    id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    name: str = ""
+    endpoint_id: str = ""
+    endpoint_name: str = ""
+    model: str = ""
+    preset_key: str = ""
+    preset_name: str = ""
+    max_tokens: int = 2048
+    temperature: float = 0.7
+    notes: str = ""
+    created_at: str = ""
+
+
+@dataclass
 class BenchmarkResult:
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     endpoint_id: str = ""

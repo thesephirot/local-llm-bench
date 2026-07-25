@@ -6,12 +6,12 @@ import datetime
 from typing import Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from .models import EndpointConfig, BenchmarkResult
+from .models import EndpointConfig, PromptPreset, LlamaSwapConfig, BenchmarkResult
 from . import database as db
 
 db.init_db()
@@ -20,51 +20,6 @@ app = FastAPI(title="LLM Benchmark Dashboard")
 
 # Serve static frontend
 app.mount("/static", StaticFiles(directory="static"), name="static")
-
-# ── Preset benchmarks ──────────────────────────────────────
-
-PRESETS = {
-    "simple": {
-        "name": "Simple Echo",
-        "prompt": "Hello, how are you today?",
-        "description": "Short conversational prompt — measures basic latency.",
-    },
-    "code": {
-        "name": "Code Generation",
-        "prompt": (
-            "Write a Python function that computes the Fibonacci sequence up to n terms "
-            "using an iterative approach. Include docstrings and type hints."
-        ),
-        "description": "Code generation — tests structured output.",
-    },
-    "reasoning": {
-        "name": "Logical Reasoning",
-        "prompt": (
-            "A farmer has 17 sheep. All but 9 run away. How many sheep does the farmer have left? "
-            "Explain your reasoning step by step."
-        ),
-        "description": "Trick question — tests reasoning over pattern-matching.",
-    },
-    "long": {
-        "name": "Long Response",
-        "prompt": (
-            "Write a comprehensive essay about the history and impact of the internet, "
-            "covering its origins in the 1960s, the rise of the World Wide Web, "
-            "the dot-com bubble, social media, and the modern era. Include key dates "
-            "and figures."
-        ),
-        "description": "Long-form generation — tests sustained throughput.",
-    },
-    "translation": {
-        "name": "Translation",
-        "prompt": (
-            'Translate the following English paragraph into French, then back into English: "The quick brown fox jumps over the lazy dog." '
-            "Show each step."
-        ),
-        "description": "Round-trip translation — tests multilingual ability.",
-    },
-}
-
 
 # ── Request/Response schemas ────────────────────────────────
 
@@ -96,17 +51,85 @@ class ModelItem(BaseModel):
     name: str
 
 
+class PresetCreate(BaseModel):
+    key: str
+    name: str
+    prompt: str
+    description: str = ""
+
+
+class PresetUpdate(BaseModel):
+    id: str
+    key: str
+    name: str
+    prompt: str
+    description: str = ""
+
+
+class SwapConfigCreate(BaseModel):
+    name: str
+    endpoint_id: str
+    model: str
+    preset_key: str = ""
+    max_tokens: int = 2048
+    temperature: float = 0.7
+    notes: str = ""
+
+
+class SwapConfigUpdate(BaseModel):
+    id: str
+    name: str
+    endpoint_id: str
+    model: str
+    preset_key: str = ""
+    max_tokens: int = 2048
+    temperature: float = 0.7
+    notes: str = ""
+
+
+class ComparisonRequest(BaseModel):
+    result_ids: list[str]
+
+
 # ── API Routes ──────────────────────────────────────────────
+
+@app.get("/favicon.ico")
+async def favicon():
+    from fastapi.responses import Response
+    return Response(status_code=204)
+
 
 @app.get("/")
 async def index():
     return FileResponse("static/index.html")
 
 
+# ── Presets ─────────────────────────────────────────────────
+
 @app.get("/api/presets")
 async def get_presets():
-    return PRESETS
+    return db.presets_as_dict()
 
+
+@app.post("/api/presets")
+async def create_preset(data: PresetCreate):
+    p = PromptPreset(key=data.key, name=data.name, prompt=data.prompt, description=data.description)
+    return db.save_preset(p)
+
+
+@app.put("/api/presets/{preset_id}")
+async def update_preset(preset_id: str, data: PresetUpdate):
+    p = PromptPreset(id=data.id, key=data.key, name=data.name, prompt=data.prompt, description=data.description)
+    return db.save_preset(p)
+
+
+@app.delete("/api/presets/{preset_id}")
+async def delete_preset(preset_id: str):
+    db.delete_preset(preset_id)
+    return {"ok": True}
+
+
+# ── Endpoints ───────────────────────────────────────────────
 
 @app.get("/api/endpoints")
 async def get_endpoints():
@@ -159,13 +182,72 @@ async def get_models(endpoint_id: str):
             raise HTTPException(502, f"Failed to reach endpoint: {e}")
 
 
+# ── Swap Configs ────────────────────────────────────────────
+
+@app.get("/api/swap-configs")
+async def get_swap_configs():
+    return db.list_swap_configs()
+
+
+@app.post("/api/swap-configs")
+async def create_swap_config(data: SwapConfigCreate):
+    ep = db.get_endpoint(data.endpoint_id)
+    if not ep:
+        raise HTTPException(404, "Endpoint not found")
+    presets = db.presets_as_dict()
+    preset = presets.get(data.preset_key, {})
+    cfg = LlamaSwapConfig(
+        name=data.name,
+        endpoint_id=data.endpoint_id,
+        endpoint_name=ep.name,
+        model=data.model,
+        preset_key=data.preset_key,
+        preset_name=preset.get("name", data.preset_key),
+        max_tokens=data.max_tokens,
+        temperature=data.temperature,
+        notes=data.notes,
+        created_at=datetime.datetime.now().isoformat(),
+    )
+    return db.save_swap_config(cfg)
+
+
+@app.put("/api/swap-configs/{cfg_id}")
+async def update_swap_config(cfg_id: str, data: SwapConfigUpdate):
+    ep = db.get_endpoint(data.endpoint_id)
+    presets = db.presets_as_dict()
+    preset = presets.get(data.preset_key, {})
+    cfg = LlamaSwapConfig(
+        id=data.id,
+        name=data.name,
+        endpoint_id=data.endpoint_id,
+        endpoint_name=ep.name if ep else "",
+        model=data.model,
+        preset_key=data.preset_key,
+        preset_name=preset.get("name", data.preset_key),
+        max_tokens=data.max_tokens,
+        temperature=data.temperature,
+        notes=data.notes,
+        created_at=datetime.datetime.now().isoformat(),
+    )
+    return db.save_swap_config(cfg)
+
+
+@app.delete("/api/swap-configs/{cfg_id}")
+async def delete_swap_config(cfg_id: str):
+    db.delete_swap_config(cfg_id)
+    return {"ok": True}
+
+
+# ── Benchmark Run ───────────────────────────────────────────
+
 @app.post("/api/run")
 async def run_benchmark(data: BenchmarkRun):
     ep = db.get_endpoint(data.endpoint_id)
     if not ep:
         raise HTTPException(404, "Endpoint not found")
 
-    preset = PRESETS.get(data.preset)
+    presets = db.presets_as_dict()
+    preset = presets.get(data.preset)
     if not preset:
         raise HTTPException(400, f"Unknown preset: {data.preset}")
 
@@ -204,7 +286,6 @@ async def run_benchmark(data: BenchmarkRun):
                     text = chunk_bytes.decode().strip()
                     if not text:
                         continue
-                    # SSE format: lines starting with "data: "
                     for line in text.split("\n"):
                         if not line.startswith("data: "):
                             continue
@@ -223,7 +304,6 @@ async def run_benchmark(data: BenchmarkRun):
                                     first_token_time = (time.monotonic() - start) * 1000
                                 full_response.append(content)
 
-                            # Usage summary may come in last chunk
                             usage = chunk.get("usage")
                             if usage:
                                 result.prompt_tokens = usage.get("prompt_tokens", 0)
@@ -242,20 +322,27 @@ async def run_benchmark(data: BenchmarkRun):
         result.total_time_ms = (time.monotonic() - start) * 1000
         result.time_to_first_token_ms = first_token_time or 0
 
-        # Fallback token counting (estimate from response length)
+        # Fallback token estimation when the API doesn't return usage.
+        # Rough heuristic: ~4 chars per token for English text. Mark as estimated.
         if result.completion_tokens == 0:
-            result.completion_tokens = len(result.response) // 4
+            result.completion_tokens = max(1, len(result.response) // 4)
         if result.prompt_tokens == 0:
-            result.prompt_tokens = len(preset["prompt"]) // 4
+            result.prompt_tokens = max(1, len(preset["prompt"]) // 4)
         result.total_tokens = result.prompt_tokens + result.completion_tokens
 
-        if result.total_time_ms > 0:
+        # tok/s = generation speed, so subtract prompt processing time (TTFT)
+        generation_ms = result.total_time_ms - (result.time_to_first_token_ms or 0)
+        if generation_ms > 0:
+            result.tokens_per_second = result.completion_tokens / (generation_ms / 1000)
+        elif result.total_time_ms > 0:
             result.tokens_per_second = result.completion_tokens / (result.total_time_ms / 1000)
         result.created_at = datetime.datetime.now().isoformat()
 
     db.save_result(result)
     return result
 
+
+# ── Results ─────────────────────────────────────────────────
 
 @app.get("/api/results")
 async def get_results(
@@ -273,30 +360,19 @@ async def get_history(
     limit: int = 200,
     model: str | None = None,
     preset: str | None = None,
+    endpoint: str | None = None,
     from_date: str | None = None,
     to_date: str | None = None,
 ):
-    """Compact listing for the history table — no prompt/response bodies."""
-    return db.list_results_history(limit, model, preset, from_date, to_date)
+    return db.list_results_history(limit, model, preset, endpoint, from_date, to_date)
 
 
 @app.get("/api/results/{result_id}")
 async def get_result(result_id: str):
-    """Fetch a single result with full details."""
     result = db.get_result(result_id)
     if not result:
         raise HTTPException(404, "Result not found")
     return result
-
-
-@app.get("/api/summary")
-async def get_summary():
-    return db.get_summary()
-
-
-@app.get("/api/latest")
-async def get_latest():
-    return db.list_results_compact(20)
 
 
 @app.delete("/api/results/{result_id}")
@@ -309,3 +385,49 @@ async def delete_result(result_id: str):
 async def delete_all_results():
     db.delete_all_results()
     return {"ok": True}
+
+
+# ── Comparison ──────────────────────────────────────────────
+
+@app.post("/api/compare")
+async def compare(data: ComparisonRequest):
+    if len(data.result_ids) < 2:
+        raise HTTPException(400, "Need at least 2 results to compare")
+    results = db.compare_results(data.result_ids)
+    if len(results) < 2:
+        raise HTTPException(400, "Not enough valid results found")
+    return results
+
+
+# ── Summary / Trends ────────────────────────────────────────
+
+@app.get("/api/summary")
+async def get_summary():
+    return db.get_summary()
+
+
+@app.get("/api/latest")
+async def get_latest():
+    return db.list_results_compact(20)
+
+
+@app.get("/api/trends")
+async def get_trends(
+    model: str | None = None,
+    preset: str | None = None,
+    endpoint: str | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    group_by: str = "day",
+):
+    return db.get_trends(model, preset, endpoint, from_date, to_date, group_by)
+
+
+@app.get("/api/best-worst")
+async def get_best_worst():
+    return db.get_best_worst()
+
+
+def main():
+    import uvicorn
+    uvicorn.run("app.main:app", host="0.0.0.0", port=9090, reload=True)
