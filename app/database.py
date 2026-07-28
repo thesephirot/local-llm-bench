@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import sqlite3
 import os
+import uuid
 from contextlib import contextmanager
 from typing import List
 
-from .models import EndpointConfig, PromptPreset, LlamaSwapConfig, BenchmarkResult
+logger = logging.getLogger(__name__)
+
+from .models import EndpointConfig, PromptPreset, LlamaSwapConfig, BenchmarkResult, ChainRunResult, ChainStepResult
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "benchmarks.db")
 
@@ -72,6 +77,28 @@ def init_db() -> None:
                 notes TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS chain_runs (
+                id TEXT PRIMARY KEY,
+                config_ids TEXT NOT NULL,
+                total_steps INTEGER NOT NULL DEFAULT 0,
+                completed_steps INTEGER NOT NULL DEFAULT 0,
+                failed_steps INTEGER NOT NULL DEFAULT 0,
+                started_at TEXT NOT NULL,
+                finished_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS chain_steps (
+                id TEXT PRIMARY KEY,
+                chain_run_id TEXT NOT NULL,
+                step_index INTEGER NOT NULL DEFAULT 0,
+                config_id TEXT NOT NULL,
+                config_name TEXT NOT NULL,
+                model TEXT NOT NULL,
+                benchmark_result_id TEXT,
+                error TEXT NOT NULL DEFAULT '',
+                success INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (chain_run_id) REFERENCES chain_runs(id),
+                FOREIGN KEY (benchmark_result_id) REFERENCES results(id)
+            );
         """)
         # Migrations: add columns if missing
         for col_def in [
@@ -80,8 +107,24 @@ def init_db() -> None:
             try:
                 conn.execute(f"ALTER TABLE {col_def[0]} ADD COLUMN {col_def[1]} {col_def[2]}")
                 conn.commit()
+            except sqlite3.OperationalError:
+                pass  # column already exists
             except Exception:
-                pass
+                logger.warning("Migration failed for %s.%s", col_def[0], col_def[1], exc_info=True)
+
+        # Chain-related tables are created above; add columns if they were added later
+        for col_def in [
+            ("chain_steps", "benchmark_result_id", "TEXT"),
+            ("chain_steps", "error_category", "TEXT NOT NULL DEFAULT ''"),
+            ("chain_steps", "status_code", "INTEGER"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE {col_def[0]} ADD COLUMN {col_def[1]} {col_def[2]}")
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass  # column already exists
+            except Exception:
+                logger.warning("Migration failed for %s.%s", col_def[0], col_def[1], exc_info=True)
 
         # Seed presets if table is empty
         row = conn.execute("SELECT COUNT(*) FROM presets").fetchone()
@@ -103,6 +146,11 @@ def get_conn():
         yield conn
     finally:
         conn.close()
+
+
+async def _db_sync(func, *args):
+    """Run a synchronous DB function in a thread pool to avoid blocking the event loop."""
+    return await asyncio.to_thread(func, *args)
 
 
 # ── Endpoints ──────────────────────────────────────────────
@@ -176,6 +224,14 @@ def presets_as_dict() -> dict:
 
 
 # ── Swap Configs ───────────────────────────────────────────
+
+def get_swap_config(cfg_id: str) -> LlamaSwapConfig | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM swap_configs WHERE id=?", (cfg_id,)).fetchone()
+    if row is None:
+        return None
+    return LlamaSwapConfig(**dict(row))
+
 
 def list_swap_configs() -> List[LlamaSwapConfig]:
     with get_conn() as conn:
@@ -495,3 +551,104 @@ def get_best_worst() -> dict:
         "best_ttfb": dict(best_ttfb) if best_ttfb else None,
         "worst_ttfb": dict(worst_ttfb) if worst_ttfb else None,
     }
+
+
+# ── Chain Runs ─────────────────────────────────────────────
+
+def save_chain_run(cr: ChainRunResult) -> ChainRunResult:
+    """Persist a chain run result (without steps). Uses INSERT OR REPLACE for idempotency."""
+    import json
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO chain_runs (id, config_ids, total_steps, completed_steps, failed_steps, started_at, finished_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (cr.id, json.dumps(cr.config_ids), cr.total_steps, cr.completed_steps,
+             cr.failed_steps, cr.started_at, cr.finished_at),
+        )
+        conn.commit()
+    return cr
+
+
+def list_chain_runs(limit: int = 100) -> List[ChainRunResult]:
+    """List chain runs ordered by most recent."""
+    import json
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM chain_runs ORDER BY rowid DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    results = []
+    for r in rows:
+        d = dict(r)
+        d["config_ids"] = json.loads(d["config_ids"])
+        cr = ChainRunResult(**d)
+        cr.step_results = list_chain_steps(cr.id)
+        results.append(cr)
+    return results
+
+
+def get_chain_run(chain_id: str) -> ChainRunResult | None:
+    """Fetch a single chain run with its steps."""
+    import json
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM chain_runs WHERE id=?", (chain_id,)).fetchone()
+    if row is None:
+        return None
+    d = dict(row)
+    d["config_ids"] = json.loads(d["config_ids"])
+    cr = ChainRunResult(**d)
+    cr.step_results = list_chain_steps(chain_id)
+    return cr
+
+
+def save_chain_step(cs: ChainStepResult, chain_run_id: str) -> ChainStepResult:
+    """Persist a single step within a chain run."""
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO chain_steps (id, chain_run_id, step_index, config_id, config_name, model, benchmark_result_id, error, success, error_category, status_code) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (cs.id if hasattr(cs, 'id') and cs.id else uuid.uuid4().hex[:12],
+             chain_run_id, cs.step_index, cs.config_id, cs.config_name,
+             cs.model, cs.benchmark_result.id if cs.benchmark_result else None,
+             cs.error, 1 if cs.success else 0,
+             getattr(cs, 'error_category', ''), getattr(cs, 'status_code', None)),
+        )
+        conn.commit()
+    return cs
+
+
+def list_chain_steps(chain_run_id: str) -> List[ChainStepResult]:
+    """Fetch all steps for a chain run in order."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM chain_steps WHERE chain_run_id=? ORDER BY step_index ASC",
+            (chain_run_id,),
+        ).fetchall()
+    results = []
+    for r in rows:
+        d = dict(r)
+        cs = ChainStepResult(
+            step_index=d["step_index"],
+            config_id=d["config_id"],
+            config_name=d["config_name"],
+            model=d["model"],
+            error=d["error"],
+            success=bool(d["success"]),
+            error_category=d.get("error_category", ""),
+            status_code=d.get("status_code"),
+        )
+        # Attach benchmark_result if available
+        if d.get("benchmark_result_id"):
+            br = get_result(d["benchmark_result_id"])
+            if br:
+                cs.benchmark_result = BenchmarkResult(**br)
+        results.append(cs)
+    return results
+
+
+def delete_chain_run(chain_id: str) -> None:
+    """Delete a chain run and all its steps."""
+    with get_conn() as conn:
+        conn.execute("DELETE FROM chain_steps WHERE chain_run_id=?", (chain_id,))
+        conn.execute("DELETE FROM chain_runs WHERE id=?", (chain_id,))
+        conn.commit()
