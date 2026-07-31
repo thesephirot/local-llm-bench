@@ -4,6 +4,21 @@ A lightweight dashboard for benchmarking OpenAI-compatible LLM endpoints. Save e
 
 ## Quick Start
 
+The easiest way to run the dashboard is the start script (installs dependencies automatically on first run):
+
+```bash
+./start.sh          # foreground, http://127.0.0.1:9090
+./start.sh --bg     # background, logs to /tmp/llm-bench.log
+```
+
+Override the bind address with environment variables:
+
+```bash
+HOST=0.0.0.0 PORT=8080 ./start.sh
+```
+
+Or start it manually:
+
 ```bash
 # Install dependencies (one-time)
 uv sync
@@ -12,7 +27,7 @@ uv sync
 .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 9090
 ```
 
-Or use the CLI entry point (available after `uv sync`):
+You can also use the CLI entry point (available after `uv sync`):
 
 ```bash
 llm-bench
@@ -27,6 +42,8 @@ Then open **http://localhost:9090** in your browser.
 > you understand the exposure of `--host 0.0.0.0`.
 
 ### Background mode
+
+Use `./start.sh --bg` (logs to `/tmp/llm-bench.log`), or manually:
 
 ```bash
 nohup .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 9090 > /tmp/uvicorn.log 2>&1 &
@@ -55,6 +72,7 @@ uv run pytest
 - **Chain benchmarks** — run multiple swap configs sequentially with live SSE progress tracking
 - **Error classification** — HTTP errors, timeouts, and network failures are categorized automatically
 - **CLI entry point** — run `llm-bench` after installation to start the dashboard directly
+- **Start script** — `./start.sh` bootstraps dependencies and launches the server (foreground or `--bg`)
 
 ## Architecture
 

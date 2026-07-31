@@ -32,7 +32,9 @@ class LlamaSwapConfig:
     name: str = ""
     endpoint_id: str = ""
     endpoint_name: str = ""
-    model: str = ""
+    # Ordered list of models sharing this config's settings; a chain step
+    # is executed per model in this order.
+    models: list = field(default_factory=list)
     preset_key: str = ""
     preset_name: str = ""
     max_tokens: int = 2048

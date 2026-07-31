@@ -86,7 +86,7 @@ def test_error_classification_http_status(client):
     db.save_endpoint(ep)
     from app.models import LlamaSwapConfig
     cfg = LlamaSwapConfig(id=cfg_id, name="TestCfg", endpoint_id=ep_id, endpoint_name="Test",
-                          model="test-model", preset_key="simple")
+                          models=["test-model"], preset_key="simple")
     db.save_swap_config(cfg)
 
     mock_resp = MagicMock()
@@ -119,7 +119,7 @@ def test_error_classification_timeout(client):
     db.save_endpoint(ep)
     from app.models import LlamaSwapConfig
     cfg = LlamaSwapConfig(id=cfg_id, name="TestCfg", endpoint_id=ep_id, endpoint_name="Test",
-                          model="test-model", preset_key="simple")
+                          models=["test-model"], preset_key="simple")
     db.save_swap_config(cfg)
 
     with patch("app.main._run_single_benchmark", new_callable=AsyncMock) as mock:
@@ -145,7 +145,7 @@ def test_error_classification_network(client):
     db.save_endpoint(ep)
     from app.models import LlamaSwapConfig
     cfg = LlamaSwapConfig(id=cfg_id, name="TestCfg", endpoint_id=ep_id, endpoint_name="Test",
-                          model="test-model", preset_key="simple")
+                          models=["test-model"], preset_key="simple")
     db.save_swap_config(cfg)
 
     with patch("app.main._run_single_benchmark", new_callable=AsyncMock) as mock:
@@ -211,3 +211,29 @@ def test_chain_crud_via_api(client):
     # Verify deleted
     r = client.get(f"/api/chains/{cr.id}")
     assert r.status_code == 404
+
+
+# ── Chain status & cancellation ─────────────────────────────
+
+def test_chain_status_empty_when_idle(client):
+    r = client.get("/api/chain-status")
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+def test_cancel_chain_not_running(client):
+    r = client.post("/api/chains/does-not-exist/cancel")
+    assert r.status_code == 409
+
+
+def test_chain_status_reports_interrupted_for_stale_chain(client):
+    """An unfinished chain with no heartbeat must show as interrupted."""
+    from app.models import ChainRunResult
+    from app import database as db
+    cr = ChainRunResult(config_ids=["x"], total_steps=2,
+                        started_at="2026-01-01T00:00:00")
+    db.save_chain_run(cr)
+    r = client.get("/api/chain-status")
+    assert r.status_code == 200
+    states = {c["chain_id"]: c["state"] for c in r.json()}
+    assert states.get(cr.id) == "interrupted"

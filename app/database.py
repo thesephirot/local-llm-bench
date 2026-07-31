@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import json
 import logging
 import sqlite3
@@ -74,7 +75,8 @@ def init_db() -> None:
                 name TEXT NOT NULL,
                 endpoint_id TEXT NOT NULL,
                 endpoint_name TEXT NOT NULL DEFAULT '',
-                model TEXT NOT NULL,
+                model TEXT NOT NULL DEFAULT '',
+                models TEXT NOT NULL DEFAULT '[]',
                 preset_key TEXT NOT NULL DEFAULT '',
                 preset_name TEXT NOT NULL DEFAULT '',
                 max_tokens INTEGER NOT NULL DEFAULT 2048,
@@ -89,7 +91,11 @@ def init_db() -> None:
                 completed_steps INTEGER NOT NULL DEFAULT 0,
                 failed_steps INTEGER NOT NULL DEFAULT 0,
                 started_at TEXT NOT NULL,
-                finished_at TEXT NOT NULL
+                finished_at TEXT NOT NULL,
+                current_step_index INTEGER,
+                current_model TEXT NOT NULL DEFAULT '',
+                steps_done INTEGER NOT NULL DEFAULT 0,
+                heartbeat TEXT NOT NULL DEFAULT ''
             );
             CREATE TABLE IF NOT EXISTS chain_steps (
                 id TEXT PRIMARY KEY,
@@ -127,6 +133,11 @@ def init_db() -> None:
             ("chain_steps", "benchmark_result_id", "TEXT"),
             ("chain_steps", "error_category", "TEXT NOT NULL DEFAULT ''"),
             ("chain_steps", "status_code", "INTEGER"),
+            ("swap_configs", "models", "TEXT NOT NULL DEFAULT '[]'"),
+            ("chain_runs", "current_step_index", "INTEGER"),
+            ("chain_runs", "current_model", "TEXT NOT NULL DEFAULT ''"),
+            ("chain_runs", "steps_done", "INTEGER NOT NULL DEFAULT 0"),
+            ("chain_runs", "heartbeat", "TEXT NOT NULL DEFAULT ''"),
         ]:
             try:
                 conn.execute(f"ALTER TABLE {col_def[0]} ADD COLUMN {col_def[1]} {col_def[2]}")
@@ -135,6 +146,17 @@ def init_db() -> None:
                 pass  # column already exists
             except Exception:
                 logger.warning("Migration failed for %s.%s", col_def[0], col_def[1], exc_info=True)
+
+        # Backfill multi-model list from the legacy single-model column
+        for r in conn.execute("SELECT id, model, models FROM swap_configs").fetchall():
+            try:
+                existing = json.loads(r["models"] or "[]")
+            except json.JSONDecodeError:
+                existing = []
+            if not existing and r["model"]:
+                conn.execute("UPDATE swap_configs SET models=? WHERE id=?",
+                             (json.dumps([r["model"]]), r["id"]))
+        conn.commit()
 
         # Seed presets if table is empty
         row = conn.execute("SELECT COUNT(*) FROM presets").fetchone()
@@ -235,26 +257,42 @@ def presets_as_dict() -> dict:
 
 # ── Swap Configs ───────────────────────────────────────────
 
+def _row_to_swap_config(row) -> LlamaSwapConfig:
+    """Map a swap_configs row to the dataclass, decoding the models JSON
+    and falling back to the legacy single-model column."""
+    d = dict(row)
+    legacy_model = d.pop("model", "")
+    try:
+        models = json.loads(d.pop("models", "[]") or "[]")
+    except json.JSONDecodeError:
+        models = []
+    if not models and legacy_model:
+        models = [legacy_model]
+    d["models"] = models
+    return LlamaSwapConfig(**d)
+
+
 def get_swap_config(cfg_id: str) -> LlamaSwapConfig | None:
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM swap_configs WHERE id=?", (cfg_id,)).fetchone()
     if row is None:
         return None
-    return LlamaSwapConfig(**dict(row))
+    return _row_to_swap_config(row)
 
 
 def list_swap_configs() -> List[LlamaSwapConfig]:
     with get_conn() as conn:
         rows = conn.execute("SELECT * FROM swap_configs ORDER BY created_at DESC").fetchall()
-    return [LlamaSwapConfig(**dict(r)) for r in rows]
+    return [_row_to_swap_config(r) for r in rows]
 
 
 def save_swap_config(cfg: LlamaSwapConfig) -> LlamaSwapConfig:
     with get_conn() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO swap_configs (id, name, endpoint_id, endpoint_name, model, "
-            "preset_key, preset_name, max_tokens, temperature, notes, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (cfg.id, cfg.name, cfg.endpoint_id, cfg.endpoint_name, cfg.model,
+            "INSERT OR REPLACE INTO swap_configs (id, name, endpoint_id, endpoint_name, model, models, "
+            "preset_key, preset_name, max_tokens, temperature, notes, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (cfg.id, cfg.name, cfg.endpoint_id, cfg.endpoint_name,
+             cfg.models[0] if cfg.models else "", json.dumps(cfg.models),
              cfg.preset_key, cfg.preset_name, cfg.max_tokens, cfg.temperature,
              cfg.notes, cfg.created_at),
         )
@@ -586,6 +624,18 @@ def save_chain_run(cr: ChainRunResult) -> ChainRunResult:
     return cr
 
 
+_PROGRESS_COLS = ("current_step_index", "current_model", "steps_done", "heartbeat")
+
+
+def _row_to_chain_run(d: dict) -> ChainRunResult:
+    """Build a ChainRunResult from a chain_runs row, stripping the
+    live-progress columns (exposed separately via /api/chain-status)."""
+    d["config_ids"] = json.loads(d["config_ids"])
+    for k in _PROGRESS_COLS:
+        d.pop(k, None)
+    return ChainRunResult(**d)
+
+
 def list_chain_runs(limit: int = 100) -> List[ChainRunResult]:
     """List chain runs ordered by most recent."""
     with get_conn() as conn:
@@ -595,9 +645,7 @@ def list_chain_runs(limit: int = 100) -> List[ChainRunResult]:
         ).fetchall()
     results = []
     for r in rows:
-        d = dict(r)
-        d["config_ids"] = json.loads(d["config_ids"])
-        cr = ChainRunResult(**d)
+        cr = _row_to_chain_run(dict(r))
         cr.step_results = list_chain_steps(cr.id)
         results.append(cr)
     return results
@@ -609,11 +657,29 @@ def get_chain_run(chain_id: str) -> ChainRunResult | None:
         row = conn.execute("SELECT * FROM chain_runs WHERE id=?", (chain_id,)).fetchone()
     if row is None:
         return None
-    d = dict(row)
-    d["config_ids"] = json.loads(d["config_ids"])
-    cr = ChainRunResult(**d)
+    cr = _row_to_chain_run(dict(row))
     cr.step_results = list_chain_steps(chain_id)
     return cr
+
+
+def update_chain_progress(chain_id: str, step_index: int | None, model: str, steps_done: int) -> None:
+    """Heartbeat used by /api/chain-status to survive server restarts."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE chain_runs SET current_step_index=?, current_model=?, steps_done=?, heartbeat=? WHERE id=?",
+            (step_index, model, steps_done, datetime.datetime.now().isoformat(), chain_id),
+        )
+        conn.commit()
+
+
+def list_unfinished_chains() -> List[dict]:
+    """Chains never finalized (running, or orphaned by a crash/restart)."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, started_at, total_steps, current_step_index, current_model, steps_done, heartbeat "
+            "FROM chain_runs WHERE finished_at='' ORDER BY rowid DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def save_chain_step(cs: ChainStepResult, chain_run_id: str) -> ChainStepResult:

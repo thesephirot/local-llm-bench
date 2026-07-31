@@ -40,7 +40,7 @@ canvas[id^="chart"]{width:100%!important;height:220px!important;max-height:220px
   <div class="p-4 border-b border-surface-300">
     <div class="flex items-center justify-between mb-2">
       <h2 class="text-xs font-semibold uppercase tracking-wider text-gray-400">Swap Configs</h2>
-      <button onclick="showSwapConfigModal()" class="text-cyan-400 hover:text-cyan-300 text-sm font-medium">+ Save</button>
+      <button onclick="showSwapConfigModal()" class="text-cyan-400 hover:text-cyan-300 text-sm font-medium">+ Add</button>
     </div>
     <div id="swapConfigList" class="space-y-1 max-h-36 overflow-y-auto"></div>
   </div>
@@ -53,12 +53,6 @@ canvas[id^="chart"]{width:100%!important;height:220px!important;max-height:220px
     <div id="presetList" class="space-y-1 max-h-40 overflow-y-auto"></div>
   </div>
 
-  <div class="p-4 border-t border-surface-300 mt-auto space-y-0.5">
-    <button onclick="switchTab('dashboard')" class="w-full text-left px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-gray-200 hover:bg-surface-300 transition-colors sidebar-nav" data-tab="dashboard">📊 Dashboard</button>
-    <button onclick="switchTab('history')" class="w-full text-left px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-gray-200 hover:bg-surface-300 transition-colors sidebar-nav" data-tab="history">📋 History</button>
-    <button onclick="switchTab('compare')" class="w-full text-left px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-gray-200 hover:bg-surface-300 transition-colors sidebar-nav" data-tab="compare">⚖️ Compare</button>
-    <button onclick="switchTab('charts')" class="w-full text-left px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-gray-200 hover:bg-surface-300 transition-colors sidebar-nav" data-tab="charts">📈 Trends</button>
-  </div>
 </aside>
 
 <!-- Main -->
@@ -85,6 +79,9 @@ canvas[id^="chart"]{width:100%!important;height:220px!important;max-height:220px
       <button id="btnRunChain" onclick="runChainBenchmarkStream()" disabled class="bg-purple-600 hover:bg-purple-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold rounded-lg px-5 py-2 text-sm transition-colors">Run Chain</button>
     </div>
   </div>
+
+  <!-- Chain status bar (live progress of any running chain) -->
+  <div id="chainStatusBar" class="hidden px-4 py-1.5 bg-purple-900/30 border-b border-purple-800/50 text-xs text-purple-200 items-center gap-2 shrink-0"></div>
 
   <!-- Tabs -->
   <div class="flex border-b border-surface-300 shrink-0 bg-surface/50 gap-0">
@@ -145,8 +142,8 @@ canvas[id^="chart"]{width:100%!important;height:220px!important;max-height:220px
     <div class="space-y-3">
       <div><label class="block text-xs text-gray-400 mb-1">Config Name</label><input id="swapCfgName" class="w-full bg-surface border border-surface-400 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500" placeholder="My Config"></div>
       <div class="grid grid-cols-2 gap-3">
-        <div><label class="block text-xs text-gray-400 mb-1">Endpoint</label><select id="swapCfgEndpoint" class="w-full bg-surface border border-surface-400 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"></select></div>
-        <div><label class="block text-xs text-gray-400 mb-1">Model</label><input id="swapCfgModel" class="w-full bg-surface border border-surface-400 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500" placeholder="meta-llama/..."></div>
+        <div><label class="block text-xs text-gray-400 mb-1">Endpoint</label><select id="swapCfgEndpoint" onchange="loadSwapCfgModels()" class="w-full bg-surface border border-surface-400 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"></select></div>
+        <div><label class="block text-xs text-gray-400 mb-1">Models <span class="text-gray-600">(run in check order)</span></label><div id="swapCfgModelList" class="w-full bg-surface border border-surface-400 rounded-lg px-3 py-1.5 text-sm max-h-32 overflow-y-auto space-y-0.5 focus:outline-none focus:ring-2 focus:ring-cyan-500"><p class="text-gray-600 text-xs">— pick endpoint first —</p></div></div>
       </div>
       <div class="grid grid-cols-3 gap-3">
         <div><label class="block text-xs text-gray-400 mb-1">Preset</label><select id="swapCfgPreset" class="w-full bg-surface border border-surface-400 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"></select></div>
@@ -177,6 +174,6 @@ canvas[id^="chart"]{width:100%!important;height:220px!important;max-height:220px
   </div>
 </div>
 
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=7"></script>
 </body>
 </html>
