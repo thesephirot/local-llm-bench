@@ -9,7 +9,7 @@ A lightweight dashboard for benchmarking OpenAI-compatible LLM endpoints. Save e
 uv sync
 
 # Start the server
-.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 9090
+.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 9090
 ```
 
 Or use the CLI entry point (available after `uv sync`):
@@ -22,10 +22,22 @@ llm-bench
 
 Then open **http://localhost:9090** in your browser.
 
+> **Security note:** the app has no authentication and serves stored API keys
+> to any client that can reach it. Bind to `127.0.0.1` (the default) unless
+> you understand the exposure of `--host 0.0.0.0`.
+
 ### Background mode
 
 ```bash
-nohup .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 9090 > /tmp/uvicorn.log 2>&1 &
+nohup .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 9090 > /tmp/uvicorn.log 2>&1 &
+```
+
+### Development
+
+```bash
+# Install test dependencies and run the test suite
+uv sync --extra dev
+uv run pytest
 ```
 
 ## Features
@@ -269,12 +281,15 @@ The chain benchmark feature executes multiple swap configs in sequence, one afte
 
 The response is the full `BenchmarkResult` object, including:
 
+- `success` — `false` when the run failed (HTTP error, timeout, network); failed runs are persisted but excluded from summary/trend statistics
+- `error` / `error_category` / `status_code` — failure details (`error_category` is one of `http_error`, `timeout`, `network`, `other`)
 - `total_time_ms` — total request duration in milliseconds
 - `time_to_first_token_ms` — time until the first token was received
 - `tokens_per_second` — generation throughput (excludes prompt processing time)
 - `completion_tokens` — number of generated tokens
 - `prompt_tokens` — number of prompt tokens
 - `output_length` — character length of the generated output
+- `tokens_estimated` — `true` when the server did not return a `usage` chunk and token counts fell back to a character-based estimate (the runner requests `stream_options.include_usage`, so counts are exact on servers that support it)
 
 ## Requirements
 

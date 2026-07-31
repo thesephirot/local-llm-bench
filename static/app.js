@@ -1,5 +1,5 @@
 // LLM Benchmark Dashboard
-let presets={},running=false,sortCol='created_at',sortDir='desc',allResults=[],chartInstances={},allSwapConfigs=[],compareSelected=[];
+let presets={},running=false,sortCol='created_at',sortDir='desc',allResults=[],chartInstances={},allSwapConfigs=[],compareSelected=[],chainSelected=new Set();
 const $=s=>document.getElementById(s);
 const esc=s=>{const d=document.createElement('div');d.textContent=s;return d.innerHTML};
 const fmt=d=>d?new Date(d).toLocaleString():'—';
@@ -64,27 +64,130 @@ function checkReady(){const ep=$('selEndpoint')?.value||'',md=$('selModel')?.val
 // Swap Configs
 async function loadSwapConfigs(){
   allSwapConfigs=await api('/api/swap-configs');const list=$('swapConfigList');list.innerHTML='';
-  if(!allSwapConfigs.length){list.innerHTML='<p class="text-[10px] text-gray-600 px-3">No configs</p>';return}
+  if(!allSwapConfigs.length){list.innerHTML='<p class="text-[10px] text-gray-600 px-3">No configs</p>';renderChainConfigList();return}
   for(const cfg of allSwapConfigs){
     const div=document.createElement('div');div.className='group flex items-center gap-2 px-2 py-1 rounded text-xs hover:bg-surface-300 cursor-pointer';
     div.innerHTML=`<span class="flex-1 truncate" onclick="loadSwapConfig('${cfg.id}')" title="${esc(cfg.model)}">${esc(cfg.name)}</span><span class="text-[9px] text-gray-600 truncate max-w-[80px]">${esc(cfg.model.split('/').pop())}</span><button onclick="editSwapConfig('${cfg.id}')" class="hidden group-hover:inline text-gray-500 hover:text-gray-300 text-[10px]">✏️</button><button onclick="removeSwapConfig('${cfg.id}')" class="hidden group-hover:inline text-red-500 hover:text-red-400 text-[10px]">✕</button>`;
     list.appendChild(div);
   }
+  renderChainConfigList();
 }
 function showSwapConfigModal(){$('swapConfigModal').classList.remove('hidden');$('swapConfigModalTitle').textContent='Save Swap Config';$('swapCfgId').value='';$('swapCfgName').value='';$('swapCfgModel').value='';$('swapCfgMaxTokens').value='2048';$('swapCfgTemp').value='0.7';$('swapCfgNotes').value='';populateSwapConfigEndpoints();populateSwapConfigPresets()}
 function editSwapConfig(id){const cfg=allSwapConfigs.find(c=>c.id===id);if(!cfg)return;$('swapConfigModal').classList.remove('hidden');$('swapConfigModalTitle').textContent='Edit Swap Config';$('swapCfgId').value=id;$('swapCfgName').value=cfg.name;$('swapCfgModel').value=cfg.model;$('swapCfgMaxTokens').value=cfg.max_tokens;$('swapCfgTemp').value=cfg.temperature;$('swapCfgNotes').value=cfg.notes||'';populateSwapConfigEndpoints();populateSwapConfigPresets();$('swapCfgEndpoint').value=cfg.endpoint_id;$('swapCfgPreset').value=cfg.preset_key}
 async function saveSwapConfig(){const id=$('swapCfgId').value,body={name:$('swapCfgName').value,endpoint_id:$('swapCfgEndpoint').value,model:$('swapCfgModel').value,preset_key:$('swapCfgPreset').value,max_tokens:parseInt($('swapCfgMaxTokens').value)||2048,temperature:parseFloat($('swapCfgTemp').value)||0.7,notes:$('swapCfgNotes').value};if(id){body.id=id;await api('/api/swap-configs/'+id,{method:'PUT',body:JSON.stringify(body)})}else await api('/api/swap-configs',{method:'POST',body:JSON.stringify(body)});closeModal('swapConfigModal');await loadSwapConfigs()}
 async function removeSwapConfig(id){if(!confirm('Delete config?'))return;await api('/api/swap-configs/'+id,{method:'DELETE'});await loadSwapConfigs()}
-function loadSwapConfig(id){const cfg=allSwapConfigs.find(c=>c.id===id);if(!cfg)return;$('selEndpoint').value=cfg.endpoint_id;onEndpointChange();setTimeout(()=>{$('selModel').value=cfg.model;$('selPreset').value=cfg.preset_key;$('inpMaxTokens').value=cfg.max_tokens;$('inpTemp').value=cfg.temperature;checkReady()},600)}
+async function loadSwapConfig(id){const cfg=allSwapConfigs.find(c=>c.id===id);if(!cfg)return;$('selEndpoint').value=cfg.endpoint_id;$('selModel').innerHTML='<option value="">— loading… —</option>';await loadModels();$('selModel').value=cfg.model;$('selPreset').value=cfg.preset_key;$('inpMaxTokens').value=cfg.max_tokens;$('inpTemp').value=cfg.temperature;checkReady()}
 function populateSwapConfigEndpoints(){const sel=$('swapCfgEndpoint');if(!sel)return;sel.innerHTML='<option value="">— endpoint —</option>';document.querySelectorAll('#selEndpoint option').forEach(o=>{if(o.value){const opt=document.createElement('option');opt.value=o.value;opt.textContent=o.textContent;sel.appendChild(opt)}})}
 function populateSwapConfigPresets(){const sel=$('swapCfgPreset');if(!sel)return;sel.innerHTML='<option value="">— preset —</option>';for(const[k,p]of Object.entries(presets)){const opt=document.createElement('option');opt.value=k;opt.textContent=p.name;sel.appendChild(opt)}}
+
+// ── Chain Benchmark UI ──────────────────────────────────────
+
+function renderChainConfigList(){
+  const el=$('chainConfigList');if(!el)return;
+  if(!allSwapConfigs.length){el.innerHTML='<p class="text-gray-600">No swap configs — create one first</p>';return}
+  el.innerHTML=allSwapConfigs.map(cfg=>{
+    const checked=chainSelected.has(cfg.id)?'checked':'';
+    return`<label class="flex items-center gap-1.5 cursor-pointer hover:text-gray-200"><input type="checkbox" data-cfg-id="${esc(cfg.id)}" ${checked} onchange="toggleChainConfig(this)" class="rounded bg-surface border-surface-400 text-purple-500 focus:ring-purple-500 w-3 h-3"><span class="flex-1 truncate">${esc(cfg.name)}</span><span class="text-gray-600 shrink-0">${esc(cfg.model.split('/').pop())}</span></label>`;
+  }).join('');
+}
+
+function toggleChainConfig(cb){
+  const id=cb.dataset.cfgId;if(cb.checked)chainSelected.add(id);else chainSelected.delete(id);
+  updateRunChainButton();
+}
+
+function updateRunChainButton(){
+  const btn=$('btnRunChain');if(!btn)return;btn.disabled=chainSelected.size===0||running;
+}
+
+async function runChainBenchmarkStream(){
+  if(running||chainSelected.size===0)return;
+  running=true;updateRunChainButton();switchTab('dashboard');
+  const panel=$('panel-dashboard');
+  panel.innerHTML=`<div class="max-w-4xl mx-auto space-y-4 fade-in"><h2 class="text-lg font-semibold">Chain Run</h2><p class="text-sm text-gray-400">Running ${chainSelected.size} LLM${chainSelected.size>1?'s':''} in sequence…</p><div id="chainProgress"></div></div>`;
+  const progress=$('chainProgress');
+
+  try{
+    const resp=await fetch('/api/run-chain?stream=true',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config_ids:[...chainSelected]})});
+    if(!resp.ok)throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+
+    const reader=resp.body.getReader();
+    const decoder=new TextDecoder();
+    let buffer='';
+    let chainId='';
+    let stepCount=0;
+    let completedCount=0;
+    let failedCount=0;
+
+    while(true){
+      const{done,value}=await reader.read();
+      if(done)break;
+      buffer+=decoder.decode(value,{stream:true});
+      // Process complete SSE events (split on double newline)
+      const parts=buffer.split('\n\n');
+      buffer=parts.pop()||''; // keep incomplete event in buffer
+
+      for(const part of parts){
+        const lines=part.trim().split('\n');
+        let eventType='';
+        let dataStr='';
+        for(const line of lines){
+          if(line.startsWith('event: '))eventType=line.slice(7).trim();
+          else if(line.startsWith('data: '))dataStr=line.slice(6).trim();
+        }
+        if(!eventType||!dataStr)continue;
+
+        try{
+          const data=JSON.parse(dataStr);
+          if(eventType==='start'){
+            chainId=data.chain_id||'';
+          }else if(eventType==='step'){
+            renderStreamStep(progress,data);
+            stepCount++;
+          }else if(eventType==='complete'){
+            completedCount=data.completed_steps||0;
+            failedCount=data.failed_steps||0;
+            renderStreamComplete(progress,completedCount,failedCount);
+          }else if(eventType==='error'){
+            progress.innerHTML+=`<div class="text-center py-4 text-red-400"><p>Error: ${esc(data.message)}</p></div>`;
+          }
+        }catch(parseErr){
+          // Skip malformed events
+        }
+      }
+    }
+  }catch(e){
+    progress.innerHTML+=`<div class="text-center py-12 text-red-400"><p class="text-lg">Error</p><p class="text-sm mt-1">${esc(e.message)}</p></div>`;
+  }finally{
+    running=false;updateRunChainButton();
+  }
+}
+
+function renderStreamStep(progress,data){
+  const icon=data.success?'✅':'❌';
+  const status=data.success?'completed':(data.error||'failed');
+  const metrics=data.benchmark_result?` · ${fmtDec(data.benchmark_result.tokens_per_second)} tok/s · ${fmtMs(data.benchmark_result.total_time_ms)}`:'';
+  const card=document.createElement('div');
+  card.className='flex items-center gap-3 bg-surface rounded-lg px-4 py-2 text-sm fade-in';
+  card.innerHTML=`<span>${icon}</span><div class="flex-1"><div class="font-medium">${esc(data.config_name)}</div><div class="text-xs text-gray-500">${esc(data.model)} · ${esc(status)}${metrics}</div></div><span class="text-xs text-gray-600 shrink-0">step ${data.step_index+1}</span>`;
+  progress.appendChild(card);
+}
+
+function renderStreamComplete(progress,completedCount,failedCount){
+  const summary=document.createElement('div');
+  summary.className='flex gap-4 mt-4 text-xs text-gray-500';
+  summary.innerHTML=`<span>Total: ${completedCount+failedCount}</span><span>Completed: ${completedCount}</span><span>Failed: ${failedCount}</span>`;
+  progress.appendChild(summary);
+}
 
 // Run
 async function runBenchmark(){
   if(running)return;const epId=$('selEndpoint').value,model=$('selModel').value,preset=$('selPreset').value;if(!epId||!model||!preset)return;
   running=true;$('btnRun').disabled=true;$('btnRun').textContent='Running…';switchTab('dashboard');
   $('panel-dashboard').innerHTML='<div class="text-center py-24"><div class="inline-block w-10 h-10 border-4 border-cyan-500 border-t-transparent rounded-full animate-spin mb-4"></div><p class="text-sm text-gray-400">Running benchmark on <strong>'+esc(model)+'</strong>…</p></div>';
-  try{await api('/api/run',{method:'POST',body:JSON.stringify({endpoint_id:epId,model,preset,max_tokens:parseInt($('inpMaxTokens').value)||2048,temperature:parseFloat($('inpTemp').value)||0.7})});await loadDashboard()}
+  try{const res=await api('/api/run',{method:'POST',body:JSON.stringify({endpoint_id:epId,model,preset,max_tokens:parseInt($('inpMaxTokens').value)||2048,temperature:parseFloat($('inpTemp').value)||0.7})});
+    if(res&&res.success===false){$('panel-dashboard').innerHTML=`<div class="text-center py-24 text-red-400"><p class="text-lg">Benchmark failed</p><p class="text-sm mt-1">${esc(res.error||'Unknown error')}</p></div>`}
+    else{await loadDashboard()}}
   catch(e){$('panel-dashboard').innerHTML=`<div class="text-center py-24 text-red-400"><p class="text-lg">Error</p><p class="text-sm mt-1">${esc(e.message)}</p></div>`}
   finally{running=false;checkReady();$('btnRun').textContent='Run'}
 }
@@ -125,7 +228,7 @@ function populateHistoryFilters(){
 function renderHistoryTable(){
   const panel=$('panel-history'),sorted=[...allResults].sort((a,b)=>{let va=a[sortCol],vb=b[sortCol];if(sortCol==='created_at')return sortDir==='asc'?va.localeCompare(vb):vb.localeCompare(va);va=Number(va)||0;vb=Number(vb)||0;return sortDir==='asc'?va-vb:vb-va});
   const cl={created_at:'Date',endpoint_name:'Endpoint',model:'Model',preset_name:'Preset',total_time_ms:'Latency',time_to_first_token_ms:'TTFT',tokens_per_second:'Tok/s',completion_tokens:'Tokens',output_length:'Len'},lc=['created_at','endpoint_name','model','preset_name'];
-  panel.innerHTML=`<div class="max-w-7xl mx-auto space-y-4 fade-in"><div class="flex items-center justify-between"><h2 class="text-lg font-semibold">History (${allResults.length} runs)</h2><div class="flex gap-2"><button onclick="loadHistory()" class="px-3 py-1.5 text-xs bg-surface-200 hover:bg-surface-300 border border-surface-400 rounded-lg">↻ Refresh</button><button onclick="clearAllResults()" class="px-3 py-1.5 text-xs bg-red-900/30 hover:bg-red-900/50 border border-red-800/50 text-red-400 rounded-lg">Clear All</button></div></div><div class="flex flex-wrap gap-3"><select id="filterModel" onchange="loadHistory()" class="bg-surface-200 border border-surface-400 rounded-lg px-3 py-1.5 text-xs"><option value="">All Models</option></select><select id="filterPreset" onchange="loadHistory()" class="bg-surface-200 border border-surface-400 rounded-lg px-3 py-1.5 text-xs"><option value="">All Presets</option></select><select id="filterEndpoint" onchange="loadHistory()" class="bg-surface-200 border border-surface-400 rounded-lg px-3 py-1.5 text-xs"><option value="">All Endpoints</option></select><input type="date" id="filterFrom" onchange="loadHistory()" class="bg-surface-200 border border-surface-400 rounded-lg px-3 py-1.5 text-xs" title="From"><input type="date" id="filterTo" onchange="loadHistory()" class="bg-surface-200 border border-surface-400 rounded-lg px-3 py-1.5 text-xs" title="To"></div><div class="bg-surface-200 border border-surface-300 rounded-xl overflow-hidden"><div class="overflow-x-auto"><table class="sortable w-full text-sm"><thead><tr class="border-b border-surface-300 bg-surface/80">${Object.keys(cl).map(c=>`<th class="text-${lc.includes(c)?'left':'right'} px-4 py-2 text-xs font-semibold text-gray-400 uppercase" onclick="handleSort('${c}')">${cl[c]}${sortCol===c?(sortDir==='asc'?' ▲':' ▼'):''}</th>`).join('')}<th class="px-4 py-2"></th></tr></thead><tbody class="divide-y divide-surface-300/50">${sorted.length?sorted.map(r=>`<tr class="hover:bg-surface-300/50"><td class="px-4 py-2 text-xs text-gray-300">${fmt(r.created_at)}</td><td class="px-4 py-2 text-xs">${esc(r.endpoint_name)}</td><td class="px-4 py-2 text-xs font-medium">${esc(r.model)}</td><td class="px-4 py-2 text-xs text-gray-400">${esc(r.preset_name)}</td><td class="px-4 py-2 text-xs text-right">${fmtSec(r.total_time_ms)}</td><td class="px-4 py-2 text-xs text-right">${fmtMs(r.time_to_first_token_ms)}</td><td class="px-4 py-2 text-xs text-right text-cyan-400 font-medium">${fmtDec(r.tokens_per_second)}</td><td class="px-4 py-2 text-xs text-right">${fmtNum(r.completion_tokens)}</td><td class="px-4 py-2 text-xs text-right">${fmtNum(r.output_length)}</td><td class="px-4 py-2 text-right whitespace-nowrap"><button onclick="showDetail('${r.id}')" class="text-cyan-400 hover:text-cyan-300 text-xs mr-2">View</button><button onclick="deleteResult('${r.id}')" class="text-red-500 hover:text-red-400 text-xs">✕</button></td></tr>`).join(''):'<tr><td colspan="10" class="text-center py-12 text-gray-600 text-sm">No results</td></tr>'}</tbody></table></div></div></div>`;
+  panel.innerHTML=`<div class="max-w-7xl mx-auto space-y-4 fade-in"><div class="flex items-center justify-between"><h2 class="text-lg font-semibold">History (${allResults.length} runs)</h2><div class="flex gap-2"><button onclick="loadHistory()" class="px-3 py-1.5 text-xs bg-surface-200 hover:bg-surface-300 border border-surface-400 rounded-lg">↻ Refresh</button><button onclick="clearAllResults()" class="px-3 py-1.5 text-xs bg-red-900/30 hover:bg-red-900/50 border border-red-800/50 text-red-400 rounded-lg">Clear All</button></div></div><div class="flex flex-wrap gap-3"><select id="filterModel" onchange="loadHistory()" class="bg-surface-200 border border-surface-400 rounded-lg px-3 py-1.5 text-xs"><option value="">All Models</option></select><select id="filterPreset" onchange="loadHistory()" class="bg-surface-200 border border-surface-400 rounded-lg px-3 py-1.5 text-xs"><option value="">All Presets</option></select><select id="filterEndpoint" onchange="loadHistory()" class="bg-surface-200 border border-surface-400 rounded-lg px-3 py-1.5 text-xs"><option value="">All Endpoints</option></select><input type="date" id="filterFrom" onchange="loadHistory()" class="bg-surface-200 border border-surface-400 rounded-lg px-3 py-1.5 text-xs" title="From"><input type="date" id="filterTo" onchange="loadHistory()" class="bg-surface-200 border border-surface-400 rounded-lg px-3 py-1.5 text-xs" title="To"></div><div class="bg-surface-200 border border-surface-300 rounded-xl overflow-hidden"><div class="overflow-x-auto"><table class="sortable w-full text-sm"><thead><tr class="border-b border-surface-300 bg-surface/80">${Object.keys(cl).map(c=>`<th class="text-${lc.includes(c)?'left':'right'} px-4 py-2 text-xs font-semibold text-gray-400 uppercase" onclick="handleSort('${c}')">${cl[c]}${sortCol===c?(sortDir==='asc'?' ▲':' ▼'):''}</th>`).join('')}<th class="px-4 py-2"></th></tr></thead><tbody class="divide-y divide-surface-300/50">${sorted.length?sorted.map(r=>`<tr class="hover:bg-surface-300/50"><td class="px-4 py-2 text-xs text-gray-300">${r.success?'':`<span class="text-red-400" title="${esc(r.error||'failed').replace(/"/g,'&quot;')}">⚠ </span>`}${fmt(r.created_at)}</td><td class="px-4 py-2 text-xs">${esc(r.endpoint_name)}</td><td class="px-4 py-2 text-xs font-medium">${esc(r.model)}</td><td class="px-4 py-2 text-xs text-gray-400">${esc(r.preset_name)}</td><td class="px-4 py-2 text-xs text-right">${fmtSec(r.total_time_ms)}</td><td class="px-4 py-2 text-xs text-right">${fmtMs(r.time_to_first_token_ms)}</td><td class="px-4 py-2 text-xs text-right text-cyan-400 font-medium">${fmtDec(r.tokens_per_second)}</td><td class="px-4 py-2 text-xs text-right">${fmtNum(r.completion_tokens)}</td><td class="px-4 py-2 text-xs text-right">${fmtNum(r.output_length)}</td><td class="px-4 py-2 text-right whitespace-nowrap"><button onclick="showDetail('${r.id}')" class="text-cyan-400 hover:text-cyan-300 text-xs mr-2">View</button><button onclick="deleteResult('${r.id}')" class="text-red-500 hover:text-red-400 text-xs">✕</button></td></tr>`).join(''):'<tr><td colspan="10" class="text-center py-12 text-gray-600 text-sm">No results</td></tr>'}</tbody></table></div></div></div>`;
 }
 function handleSort(c){if(sortCol===c)sortDir=sortDir==='asc'?'desc':'asc';else{sortCol=c;sortDir='desc'}renderHistoryTable()}
 async function showDetail(id){const r=await api('/api/results/'+id);$('detailTitle').textContent=r.endpoint_name+' / '+r.model;$('detailMeta').textContent=r.preset_name+' · '+fmt(r.created_at);$('detailStats').innerHTML=[{l:'TTFT',v:fmtMs(r.time_to_first_token_ms)},{l:'Total',v:fmtSec(r.total_time_ms)},{l:'Tok/s',v:fmtDec(r.tokens_per_second)},{l:'Tokens',v:fmtNum(r.completion_tokens)},{l:'Output',v:(r.output_length||0).toLocaleString()+' ch'}].map(s=>`<div class="bg-surface rounded-lg p-2 text-center"><div class="text-base font-bold text-cyan-400">${s.v}</div><div class="text-xs text-gray-500">${s.l}</div></div>`).join('');$('detailPrompt').textContent=r.prompt;$('detailResponse').textContent=r.response;$('detailModal').classList.remove('hidden')}

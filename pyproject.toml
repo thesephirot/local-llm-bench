@@ -9,5 +9,8 @@ dependencies = [
     "pydantic>=2.10",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8", "httpx>=0.28"]
+
 [project.scripts]
 llm-bench = "app.main:main"
