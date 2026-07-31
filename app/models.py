@@ -3,6 +3,8 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
+from enum import Enum
+from pydantic import BaseModel, Field
 from typing import Optional
 
 
@@ -56,3 +58,49 @@ class BenchmarkResult:
     tokens_per_second: float = 0.0
     output_length: int = 0
     created_at: str = ""
+    success: bool = True
+    error: str = ""
+    error_category: str = ""   # one of ErrorCategory values
+    status_code: int | None = None
+    tokens_estimated: bool = False  # True when token counts fell back to char/4 estimate
+
+
+@dataclass
+class ChainStepResult:
+    """Per-step result within a chain run."""
+    id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    step_index: int = 0
+    config_id: str = ""
+    config_name: str = ""
+    model: str = ""
+    benchmark_result: BenchmarkResult | None = None
+    error: str = ""
+    success: bool = False
+    error_category: str = ""   # one of ErrorCategory values
+    status_code: int | None = None
+
+
+@dataclass
+class ChainRunResult:
+    """Aggregated result for a full chain execution."""
+    id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    config_ids: list[str] = field(default_factory=list)
+    step_results: list[ChainStepResult] = field(default_factory=list)
+    total_steps: int = 0
+    completed_steps: int = 0
+    failed_steps: int = 0
+    started_at: str = ""
+    finished_at: str = ""
+
+
+class ChainRunRequest(BaseModel):
+    """Request body for running a chain of benchmarks."""
+    config_ids: list[str]
+
+
+class ErrorCategory(str, Enum):
+    """Structured error classification for benchmark steps."""
+    HTTP_ERROR = "http_error"
+    TIMEOUT = "timeout"
+    NETWORK = "network"
+    OTHER = "other"

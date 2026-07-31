@@ -55,7 +55,12 @@ def init_db() -> None:
                 total_time_ms REAL NOT NULL DEFAULT 0,
                 tokens_per_second REAL NOT NULL DEFAULT 0,
                 output_length INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                success INTEGER NOT NULL DEFAULT 1,
+                error TEXT NOT NULL DEFAULT '',
+                error_category TEXT NOT NULL DEFAULT '',
+                status_code INTEGER,
+                tokens_estimated INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS presets (
                 id TEXT PRIMARY KEY,
@@ -103,6 +108,11 @@ def init_db() -> None:
         # Migrations: add columns if missing
         for col_def in [
             ("results", "output_length", "INTEGER NOT NULL DEFAULT 0"),
+            ("results", "success", "INTEGER NOT NULL DEFAULT 1"),
+            ("results", "error", "TEXT NOT NULL DEFAULT ''"),
+            ("results", "error_category", "TEXT NOT NULL DEFAULT ''"),
+            ("results", "status_code", "INTEGER"),
+            ("results", "tokens_estimated", "INTEGER NOT NULL DEFAULT 0"),
         ]:
             try:
                 conn.execute(f"ALTER TABLE {col_def[0]} ADD COLUMN {col_def[1]} {col_def[2]}")
@@ -266,12 +276,15 @@ def save_result(r: BenchmarkResult) -> BenchmarkResult:
             """INSERT INTO results (
                 id, endpoint_id, endpoint_name, model, preset_name,
                 prompt, response, prompt_tokens, completion_tokens, total_tokens,
-                time_to_first_token_ms, total_time_ms, tokens_per_second, output_length, created_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                time_to_first_token_ms, total_time_ms, tokens_per_second, output_length, created_at,
+                success, error, error_category, status_code, tokens_estimated
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (r.id, r.endpoint_id, r.endpoint_name, r.model, r.preset_name,
              r.prompt, r.response, r.prompt_tokens, r.completion_tokens, r.total_tokens,
              r.time_to_first_token_ms, r.total_time_ms, r.tokens_per_second,
-             r.output_length, r.created_at),
+             r.output_length, r.created_at,
+             1 if r.success else 0, r.error, r.error_category, r.status_code,
+             1 if r.tokens_estimated else 0),
         )
         conn.commit()
     return r
@@ -368,7 +381,7 @@ def list_results_history(
             f"""
             SELECT id, endpoint_id, endpoint_name, model, preset_name,
                    total_time_ms, time_to_first_token_ms, tokens_per_second,
-                   completion_tokens, output_length, created_at
+                   completion_tokens, output_length, created_at, success, error
             FROM results{where}
             ORDER BY created_at DESC LIMIT ?
             """,
@@ -405,9 +418,12 @@ def compare_results(result_ids: list[str]) -> list[dict]:
 def get_summary() -> dict:
     with get_conn() as conn:
         total_runs = conn.execute("SELECT COUNT(*) FROM results").fetchone()[0]
-        if total_runs == 0:
+        failed_runs = conn.execute("SELECT COUNT(*) FROM results WHERE success = 0").fetchone()[0]
+        ok_runs = total_runs - failed_runs
+        if ok_runs == 0:
             return {
-                "total_runs": 0,
+                "total_runs": total_runs,
+                "failed_runs": failed_runs,
                 "unique_models": [],
                 "unique_presets": [],
                 "avg_latency_ms": 0,
@@ -426,23 +442,23 @@ def get_summary() -> dict:
                 AVG(total_time_ms) as avg_latency_ms,
                 AVG(time_to_first_token_ms) as avg_ttfb_ms,
                 AVG(tokens_per_second) as avg_tps
-            FROM results
+            FROM results WHERE success = 1
             """
         ).fetchone()
         d = dict(row)
 
         best = conn.execute(
-            "SELECT model, tokens_per_second FROM results ORDER BY tokens_per_second DESC LIMIT 1"
+            "SELECT model, tokens_per_second FROM results WHERE success = 1 ORDER BY tokens_per_second DESC LIMIT 1"
         ).fetchone()
         worst = conn.execute(
-            "SELECT model, tokens_per_second FROM results ORDER BY tokens_per_second ASC LIMIT 1"
+            "SELECT model, tokens_per_second FROM results WHERE success = 1 ORDER BY tokens_per_second ASC LIMIT 1"
         ).fetchone()
 
         models_row = conn.execute("SELECT DISTINCT model FROM results").fetchall()
         presets_row = conn.execute("SELECT DISTINCT preset_name FROM results").fetchall()
 
         model_stats = []
-        models = conn.execute("SELECT DISTINCT model FROM results").fetchall()
+        models = conn.execute("SELECT DISTINCT model FROM results WHERE success = 1").fetchall()
         for m in models:
             model_name = m[0]
             stat = conn.execute(
@@ -454,7 +470,7 @@ def get_summary() -> dict:
                     AVG(tokens_per_second) as avg_tps,
                     MIN(total_time_ms) as min_latency,
                     MAX(total_time_ms) as max_latency
-                FROM results WHERE model = ?
+                FROM results WHERE model = ? AND success = 1
                 """, (model_name,)
             ).fetchone()
             sd = dict(stat)
@@ -463,15 +479,16 @@ def get_summary() -> dict:
 
         return {
             "total_runs": total_runs,
+            "failed_runs": failed_runs,
             "unique_models": [r[0] for r in models_row],
             "unique_presets": [r[0] for r in presets_row],
-            "avg_latency_ms": round(d["avg_latency_ms"], 2),
-            "avg_ttfb_ms": round(d["avg_ttfb_ms"], 2),
-            "avg_tps": round(d["avg_tps"], 2),
-            "best_tps": round(best[1], 2),
-            "best_tps_model": best[0],
-            "worst_tps": round(worst[1], 2),
-            "worst_tps_model": worst[0],
+            "avg_latency_ms": round(d["avg_latency_ms"] or 0, 2),
+            "avg_ttfb_ms": round(d["avg_ttfb_ms"] or 0, 2),
+            "avg_tps": round(d["avg_tps"] or 0, 2),
+            "best_tps": round(best[1], 2) if best else 0,
+            "best_tps_model": best[0] if best else "",
+            "worst_tps": round(worst[1], 2) if worst else 0,
+            "worst_tps_model": worst[0] if worst else "",
             "model_stats": model_stats,
         }
 
@@ -492,8 +509,9 @@ def get_trends(
     to_date: str | None = None,
     group_by: str = "day",
 ) -> list[dict]:
-    """Time-series trend data grouped by day/hour."""
+    """Time-series trend data grouped by day/hour (successful runs only)."""
     where, params = _build_filter(model, preset, endpoint, from_date, to_date)
+    where = (where + " AND success = 1") if where else " WHERE success = 1"
 
     if group_by == "hour":
         date_fmt = "strftime('%Y-%m-%d %H:00', created_at)"
@@ -518,29 +536,29 @@ def get_trends(
 
 
 def get_best_worst() -> dict:
-    """Return best and worst runs across key metrics."""
+    """Return best and worst runs across key metrics (successful runs only)."""
     with get_conn() as conn:
-        total = conn.execute("SELECT COUNT(*) FROM results").fetchone()[0]
+        total = conn.execute("SELECT COUNT(*) FROM results WHERE success = 1").fetchone()[0]
         if total == 0:
             return {}
 
         best_tps = conn.execute(
-            "SELECT * FROM results ORDER BY tokens_per_second DESC LIMIT 1"
+            "SELECT * FROM results WHERE success = 1 ORDER BY tokens_per_second DESC LIMIT 1"
         ).fetchone()
         worst_tps = conn.execute(
-            "SELECT * FROM results ORDER BY tokens_per_second ASC LIMIT 1"
+            "SELECT * FROM results WHERE success = 1 ORDER BY tokens_per_second ASC LIMIT 1"
         ).fetchone()
         best_latency = conn.execute(
-            "SELECT * FROM results WHERE total_time_ms > 0 ORDER BY total_time_ms ASC LIMIT 1"
+            "SELECT * FROM results WHERE success = 1 AND total_time_ms > 0 ORDER BY total_time_ms ASC LIMIT 1"
         ).fetchone()
         worst_latency = conn.execute(
-            "SELECT * FROM results ORDER BY total_time_ms DESC LIMIT 1"
+            "SELECT * FROM results WHERE success = 1 ORDER BY total_time_ms DESC LIMIT 1"
         ).fetchone()
         best_ttfb = conn.execute(
-            "SELECT * FROM results WHERE time_to_first_token_ms > 0 ORDER BY time_to_first_token_ms ASC LIMIT 1"
+            "SELECT * FROM results WHERE success = 1 AND time_to_first_token_ms > 0 ORDER BY time_to_first_token_ms ASC LIMIT 1"
         ).fetchone()
         worst_ttfb = conn.execute(
-            "SELECT * FROM results ORDER BY time_to_first_token_ms DESC LIMIT 1"
+            "SELECT * FROM results WHERE success = 1 ORDER BY time_to_first_token_ms DESC LIMIT 1"
         ).fetchone()
 
     return {
@@ -557,7 +575,6 @@ def get_best_worst() -> dict:
 
 def save_chain_run(cr: ChainRunResult) -> ChainRunResult:
     """Persist a chain run result (without steps). Uses INSERT OR REPLACE for idempotency."""
-    import json
     with get_conn() as conn:
         conn.execute(
             "INSERT OR REPLACE INTO chain_runs (id, config_ids, total_steps, completed_steps, failed_steps, started_at, finished_at) "
@@ -571,7 +588,6 @@ def save_chain_run(cr: ChainRunResult) -> ChainRunResult:
 
 def list_chain_runs(limit: int = 100) -> List[ChainRunResult]:
     """List chain runs ordered by most recent."""
-    import json
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT * FROM chain_runs ORDER BY rowid DESC LIMIT ?",
@@ -589,7 +605,6 @@ def list_chain_runs(limit: int = 100) -> List[ChainRunResult]:
 
 def get_chain_run(chain_id: str) -> ChainRunResult | None:
     """Fetch a single chain run with its steps."""
-    import json
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM chain_runs WHERE id=?", (chain_id,)).fetchone()
     if row is None:

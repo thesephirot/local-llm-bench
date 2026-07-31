@@ -96,24 +96,52 @@ class ComparisonRequest(BaseModel):
     result_ids: list[str]
 
 
-# ── SSE Streaming for Chain Progress ───────────────────────
+# ── Shared Chain Execution ────────────────────────────────
 
-async def _stream_chain_execution(config_ids: list[str]):
-    """Execute chain steps sequentially and yield SSE events as each completes."""
+def _step_to_dict(step: ChainStepResult) -> dict:
+    """Serialize a chain step for API responses and SSE events."""
+    data = {
+        "step_index": step.step_index,
+        "config_id": step.config_id,
+        "config_name": step.config_name,
+        "model": step.model,
+        "success": step.success,
+        "error": step.error,
+        "error_category": step.error_category or None,
+        "status_code": step.status_code,
+        "benchmark_result": None,
+    }
+    if step.success and step.benchmark_result:
+        br = step.benchmark_result
+        data["benchmark_result"] = {
+            "id": br.id,
+            "tokens_per_second": br.tokens_per_second,
+            "total_time_ms": br.total_time_ms,
+            "completion_tokens": br.completion_tokens,
+            "prompt_tokens": br.prompt_tokens,
+        }
+    return data
+
+
+async def _execute_chain(config_ids: list[str]):
+    """Shared chain execution core.
+
+    Async generator yielding ("start", dict), ("step", ChainStepResult),
+    and ("complete", dict) events. Used by both the SSE streaming endpoint
+    and the synchronous endpoint so the execution logic lives in one place.
+    """
 
     # Resolve configs and build ordered list of steps
     steps: list[ChainStepResult] = []
     for idx, cfg_id in enumerate(config_ids):
-        cfg = db.get_swap_config(cfg_id)
+        cfg = await _db_sync(db.get_swap_config, cfg_id)
         if not cfg:
-            step = ChainStepResult(step_index=idx, config_id=cfg_id,
-                                   error=f"Config {cfg_id} not found", success=False,
-                                   error_category=ErrorCategory.OTHER.value)
-            steps.append(step)
+            steps.append(ChainStepResult(step_index=idx, config_id=cfg_id,
+                                         error=f"Config {cfg_id} not found", success=False,
+                                         error_category=ErrorCategory.OTHER.value))
             continue
-        step = ChainStepResult(step_index=idx, config_id=cfg.id,
-                               config_name=cfg.name, model=cfg.model)
-        steps.append(step)
+        steps.append(ChainStepResult(step_index=idx, config_id=cfg.id,
+                                     config_name=cfg.name, model=cfg.model))
 
     # Create and persist the chain run record
     chain_result = ChainRunResult(
@@ -122,108 +150,90 @@ async def _stream_chain_execution(config_ids: list[str]):
         total_steps=len(steps),
         started_at=datetime.datetime.now().isoformat(),
     )
-    db.save_chain_run(chain_result)
+    await _db_sync(db.save_chain_run, chain_result)
 
-    yield f'event: start\ndata: {{"chain_id": "{json.dumps(chain_result.id)}"}}\n\n'
+    yield ("start", {"chain_id": chain_result.id, "started_at": chain_result.started_at})
 
     # Resolve presets once
-    presets = db.presets_as_dict()
+    presets = await _db_sync(db.presets_as_dict)
 
     completed = 0
     failed = 0
 
     for step in steps:
-        cfg = db.get_swap_config(step.config_id)
+        cfg = await _db_sync(db.get_swap_config, step.config_id)
         if not cfg or not cfg.endpoint_id:
-            step.error = f"Config {step.config_id} not found"
+            step.error = step.error or f"Config {step.config_id} not found"
             step.success = False
             step.error_category = ErrorCategory.OTHER.value
-            failed += 1
-            db.save_chain_step(step, chain_result.id)
-            yield _sse_step_event(step)
-            continue
+        else:
+            ep = await _db_sync(db.get_endpoint, cfg.endpoint_id)
+            if not ep:
+                step.error = "Endpoint not found"
+                step.success = False
+                step.error_category = ErrorCategory.OTHER.value
+            else:
+                preset_name = cfg.preset_key or "simple"
+                preset = presets.get(preset_name, {})
+                try:
+                    br = await _run_single_benchmark(
+                        endpoint=ep,
+                        model=cfg.model,
+                        preset_name=preset.get("name", preset_name),
+                        preset_prompt=preset.get("prompt", "Hello, how are you today?"),
+                        max_tokens=cfg.max_tokens,
+                        temperature=cfg.temperature,
+                    )
+                    # _run_single_benchmark returns a discriminated result:
+                    # failures (HTTP/timeout/network) come back with success=False.
+                    step.benchmark_result = br
+                    step.success = br.success
+                    if not br.success:
+                        step.error = br.error
+                        step.error_category = br.error_category or ErrorCategory.OTHER.value
+                        step.status_code = br.status_code
+                except httpx.TimeoutException as e:
+                    step.error = str(e)
+                    step.error_category = ErrorCategory.TIMEOUT.value
+                    step.success = False
+                except (httpx.ConnectError, httpx.NetworkError) as e:
+                    step.error = str(e)
+                    step.error_category = ErrorCategory.NETWORK.value
+                    step.success = False
+                except httpx.HTTPStatusError as e:
+                    step.error = f"HTTP {e.response.status_code}: {e.response.text}"
+                    step.error_category = ErrorCategory.HTTP_ERROR.value
+                    step.status_code = e.response.status_code
+                    step.success = False
+                except Exception as e:
+                    step.error = str(e)
+                    step.error_category = ErrorCategory.OTHER.value
+                    step.success = False
 
-        ep = await _db_sync(db.get_endpoint, cfg.endpoint_id)
-        if not ep:
-            step.error = "Endpoint not found"
-            step.success = False
-            step.error_category = ErrorCategory.OTHER.value
-            failed += 1
-            await _db_sync(db.save_chain_step, step, chain_result.id)
-            yield _sse_step_event(step)
-            continue
-
-        preset_name = cfg.preset_key or "simple"
-        preset = presets.get(preset_name, {})
-        preset_prompt = preset.get("prompt", "Hello, how are you today?")
-        preset_display = preset.get("name", preset_name)
-
-        try:
-            br = await _run_single_benchmark(
-                endpoint=ep,
-                model=cfg.model,
-                preset_name=preset_display,
-                preset_prompt=preset_prompt,
-                max_tokens=cfg.max_tokens,
-                temperature=cfg.temperature,
-            )
-            step.benchmark_result = br
-            step.success = True
+        if step.success:
             completed += 1
-        except httpx.TimeoutException as e:
-            step.error = str(e)
-            step.error_category = ErrorCategory.TIMEOUT.value
-            step.success = False
+        else:
             failed += 1
-        except (httpx.ConnectError, httpx.NetworkError) as e:
-            step.error = str(e)
-            step.error_category = ErrorCategory.NETWORK.value
-            step.success = False
-            failed += 1
-        except httpx.HTTPStatusError as e:
-            step.error = f"HTTP {e.response.status_code}: {e.response.text}"
-            step.error_category = ErrorCategory.HTTP_ERROR.value
-            step.status_code = e.response.status_code
-            step.success = False
-            failed += 1
-        except Exception as e:
-            step.error = str(e)
-            step.error_category = ErrorCategory.OTHER.value
-            step.success = False
-            failed += 1
-
         await _db_sync(db.save_chain_step, step, chain_result.id)
-        yield _sse_step_event(step)
+        yield ("step", step)
 
-    finished = datetime.datetime.now().isoformat()
-    chain_result.finished_at = finished
+    chain_result.finished_at = datetime.datetime.now().isoformat()
     chain_result.completed_steps = completed
     chain_result.failed_steps = failed
     await _db_sync(db.save_chain_run, chain_result)
 
-    yield f"event: complete\ndata: {{\"completed_steps\": {completed}, \"failed_steps\": {failed}}}\n\n"
+    yield ("complete", {"completed_steps": completed, "failed_steps": failed,
+                        "finished_at": chain_result.finished_at})
 
 
-def _sse_step_event(step: ChainStepResult) -> str:
-    """Format a single step result as an SSE event string."""
-    data = {
-        "step_index": step.step_index,
-        "config_name": step.config_name,
-        "model": step.model,
-        "success": step.success,
-        "error": step.error,
-        "error_category": step.error_category,
-        "status_code": step.status_code,
-    }
-    if step.benchmark_result:
-        br = step.benchmark_result
-        data["benchmark_result"] = {
-            "tokens_per_second": br.tokens_per_second,
-            "total_time_ms": br.total_time_ms,
-            "completion_tokens": br.completion_tokens,
-            "prompt_tokens": br.prompt_tokens,
-        }
-    return f"event: step\ndata: {json.dumps(data)}\n\n"
+async def _stream_chain_execution(config_ids: list[str]):
+    """Format chain execution events as SSE frames."""
+    async for kind, payload in _execute_chain(config_ids):
+        if kind == "step":
+            data = _step_to_dict(payload)
+        else:
+            data = payload
+        yield f"event: {kind}\ndata: {json.dumps(data)}\n\n"
 
 
 # ── Shared Benchmark Logic ─────────────────────────────────
@@ -240,7 +250,11 @@ async def _run_single_benchmark(
 
     This is the shared core logic used by both /api/run and /api/run-chain.
     """
-    headers = {"Authorization": f"Bearer {endpoint.api_key}", "Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json"}
+    if endpoint.api_key:
+        # Local servers (llama.cpp/llama-swap) often have no key; sending
+        # "Bearer " with an empty token is an illegal HTTP header value.
+        headers["Authorization"] = f"Bearer {endpoint.api_key}"
     try:
         extra = json.loads(endpoint.extra_headers)
         headers.update(extra)
@@ -261,17 +275,41 @@ async def _run_single_benchmark(
         "max_tokens": max_tokens,
         "temperature": temperature,
         "stream": True,
+        # Ask the server to include a usage chunk so token counts are
+        # measured rather than estimated (ignored by servers that don't
+        # support it).
+        "stream_options": {"include_usage": True},
     }
 
-    async with httpx.AsyncClient(timeout=120) as client:
-        start = time.monotonic()
-        first_token_time = None
-        full_response = []
-        try:
+    async def _fail(error: str, category: ErrorCategory, status_code: int | None = None,
+                    start: float | None = None) -> BenchmarkResult:
+        """Persist and return a failed result so failures are visible in history."""
+        result.success = False
+        result.error = error
+        result.error_category = category.value
+        result.status_code = status_code
+        if start is not None:
+            result.total_time_ms = (time.monotonic() - start) * 1000
+        result.created_at = datetime.datetime.now().isoformat()
+        await _db_sync(db.save_result, result)
+        return result
+
+    start = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            first_token_time = None
+            full_response = []
+            usage_seen = False
+            done = False
             async with client.stream("POST", f"{endpoint.base_url}/v1/chat/completions",
                                      json=payload, headers=headers) as resp:
-                resp.raise_for_status()
+                if resp.status_code >= 400:
+                    # Read the body so .text is available for the error report.
+                    await resp.aread()
+                    resp.raise_for_status()
                 async for chunk_bytes in resp.aiter_bytes():
+                    if done:
+                        break
                     text = chunk_bytes.decode().strip()
                     if not text:
                         continue
@@ -280,6 +318,7 @@ async def _run_single_benchmark(
                             continue
                         json_str = line[6:]
                         if json_str == "[DONE]":
+                            done = True
                             break
                         try:
                             chunk = json.loads(json_str)
@@ -295,43 +334,42 @@ async def _run_single_benchmark(
 
                             usage = chunk.get("usage")
                             if usage:
+                                usage_seen = True
                                 result.prompt_tokens = usage.get("prompt_tokens", 0)
                                 result.completion_tokens = usage.get("completion_tokens", 0)
                                 result.total_tokens = usage.get("total_tokens", 0)
                         except json.JSONDecodeError:
                             continue
-        except httpx.HTTPStatusError as e:
-            result.response = f"HTTP {e.response.status_code}: {e.response.text}"
-            result.total_time_ms = (time.monotonic() - start) * 1000
-            result.prompt_tokens = 0
-            result.completion_tokens = 0
-            result.total_tokens = 0
-            result.tokens_per_second = 0.0
-            result.output_length = len(result.response)
-            result.created_at = datetime.datetime.now().isoformat()
-            db.save_result(result)
-            return result
+    except httpx.HTTPStatusError as e:
+        return await _fail(f"HTTP {e.response.status_code}: {e.response.text}",
+                           ErrorCategory.HTTP_ERROR, e.response.status_code, start)
+    except httpx.TimeoutException as e:
+        return await _fail(str(e), ErrorCategory.TIMEOUT, start=start)
+    except (httpx.ConnectError, httpx.NetworkError) as e:
+        return await _fail(str(e), ErrorCategory.NETWORK, start=start)
 
-        result.response = "".join(full_response)
-        result.output_length = len(result.response)
-        result.total_time_ms = (time.monotonic() - start) * 1000
-        result.time_to_first_token_ms = first_token_time or 0
+    result.response = "".join(full_response)
+    result.output_length = len(result.response)
+    result.total_time_ms = (time.monotonic() - start) * 1000
+    result.time_to_first_token_ms = first_token_time or 0
 
-        # Fallback token estimation when the API doesn't return usage.
+    # Fallback token estimation when the API doesn't return usage.
+    if not usage_seen:
+        result.tokens_estimated = True
         if result.completion_tokens == 0:
             result.completion_tokens = max(1, len(result.response) // 4)
         if result.prompt_tokens == 0:
             result.prompt_tokens = max(1, len(preset_prompt) // 4)
-        result.total_tokens = result.prompt_tokens + result.completion_tokens
+    result.total_tokens = result.prompt_tokens + result.completion_tokens
 
-        generation_ms = result.total_time_ms - (result.time_to_first_token_ms or 0)
-        if generation_ms > 0:
-            result.tokens_per_second = result.completion_tokens / (generation_ms / 1000)
-        elif result.total_time_ms > 0:
-            result.tokens_per_second = result.completion_tokens / (result.total_time_ms / 1000)
-        result.created_at = datetime.datetime.now().isoformat()
+    generation_ms = result.total_time_ms - (result.time_to_first_token_ms or 0)
+    if generation_ms > 0:
+        result.tokens_per_second = result.completion_tokens / (generation_ms / 1000)
+    elif result.total_time_ms > 0:
+        result.tokens_per_second = result.completion_tokens / (result.total_time_ms / 1000)
+    result.created_at = datetime.datetime.now().isoformat()
 
-    db.save_result(result)
+    await _db_sync(db.save_result, result)
     return result
 
 
@@ -406,7 +444,9 @@ async def get_models(endpoint_id: str):
     if not ep:
         raise HTTPException(404, "Endpoint not found")
 
-    headers = {"Authorization": f"Bearer {ep.api_key}"}
+    headers = {}
+    if ep.api_key:
+        headers["Authorization"] = f"Bearer {ep.api_key}"
     try:
         extra = json.loads(ep.extra_headers)
         headers.update(extra)
@@ -578,127 +618,23 @@ async def run_chain(data: ChainRunRequest, stream: bool = Query(default=False)):
             headers={"X-Accel-Buffering": "no"},
         )
 
-    # Resolve configs and build ordered list of steps
+    # Non-streaming: drain the shared execution generator and return the final result.
     steps: list[ChainStepResult] = []
-    for idx, cfg_id in enumerate(data.config_ids):
-        cfg = await _db_sync(db.get_swap_config, cfg_id)
-        if not cfg:
-            step = ChainStepResult(step_index=idx, config_id=cfg_id,
-                                   error=f"Config {cfg_id} not found", success=False,
-                                   error_category=ErrorCategory.OTHER.value)
-            steps.append(step)
-            continue
-        step = ChainStepResult(step_index=idx, config_id=cfg.id,
-                               config_name=cfg.name, model=cfg.model)
-        steps.append(step)
-
-    # Create and persist the chain run record
-    chain_result = ChainRunResult(
-        config_ids=data.config_ids,
-        step_results=[],  # populated below
-        total_steps=len(steps),
-        started_at=datetime.datetime.now().isoformat(),
-    )
-    await _db_sync(db.save_chain_run, chain_result)
-
-    # Resolve presets once for all steps
-    presets = db.presets_as_dict()
-
-    # Execute each step sequentially, reusing the shared benchmark logic
-    completed = 0
-    failed = 0
-    for step in steps:
-        cfg = await _db_sync(db.get_swap_config, step.config_id)
-        if not cfg or not cfg.endpoint_id:
-            step.error = f"Config {step.config_id} not found"
-            step.success = False
-            step.error_category = ErrorCategory.OTHER.value
-            failed += 1
-            await _db_sync(db.save_chain_step, step, chain_result.id)
-            continue
-
-        ep = await _db_sync(db.get_endpoint, cfg.endpoint_id)
-        if not ep:
-            step.error = "Endpoint not found"
-            step.success = False
-            step.error_category = ErrorCategory.OTHER.value
-            failed += 1
-            await _db_sync(db.save_chain_step, step, chain_result.id)
-            continue
-
-        preset_name = cfg.preset_key or "simple"
-        preset = presets.get(preset_name, {})
-        preset_prompt = preset.get("prompt", "Hello, how are you today?")
-        preset_display = preset.get("name", preset_name)
-
-        try:
-            br = await _run_single_benchmark(
-                endpoint=ep,
-                model=cfg.model,
-                preset_name=preset_display,
-                preset_prompt=preset_prompt,
-                max_tokens=cfg.max_tokens,
-                temperature=cfg.temperature,
-            )
-            step.benchmark_result = br
-            step.success = True
-            completed += 1
-        except httpx.TimeoutException as e:
-            step.error = str(e)
-            step.error_category = ErrorCategory.TIMEOUT.value
-            step.success = False
-            failed += 1
-        except (httpx.ConnectError, httpx.NetworkError) as e:
-            step.error = str(e)
-            step.error_category = ErrorCategory.NETWORK.value
-            step.success = False
-            failed += 1
-        except httpx.HTTPStatusError as e:
-            step.error = f"HTTP {e.response.status_code}: {e.response.text}"
-            step.error_category = ErrorCategory.HTTP_ERROR.value
-            step.status_code = e.response.status_code
-            step.success = False
-            failed += 1
-        except Exception as e:
-            step.error = str(e)
-            step.error_category = ErrorCategory.OTHER.value
-            step.success = False
-            failed += 1
-
-        await _db_sync(db.save_chain_step, step, chain_result.id)
-
-    finished = datetime.datetime.now().isoformat()
-    chain_result.finished_at = finished
-    chain_result.completed_steps = completed
-    chain_result.failed_steps = failed
-    # Update the persisted chain run with final counts
-    await _db_sync(db.save_chain_run, chain_result)
+    info: dict = {}
+    async for kind, payload in _execute_chain(data.config_ids):
+        if kind == "step":
+            steps.append(payload)
+        else:
+            info[kind] = payload
 
     return {
-        "id": chain_result.id,
-        "total_steps": chain_result.total_steps,
-        "completed_steps": chain_result.completed_steps,
-        "failed_steps": chain_result.failed_steps,
-        "started_at": chain_result.started_at,
-        "finished_at": finished,
-        "steps": [
-            {
-                "step_index": s.step_index,
-                "config_id": s.config_id,
-                "config_name": s.config_name,
-                "model": s.model,
-                "success": s.success,
-                "error": s.error,
-                "error_category": getattr(s, "error_category", None),
-                "status_code": getattr(s, "status_code", None),
-                "benchmark_result": (
-                    {"id": s.benchmark_result.id, "tokens_per_second": s.benchmark_result.tokens_per_second,
-                     "total_time_ms": s.benchmark_result.total_time_ms, "completion_tokens": s.benchmark_result.completion_tokens}
-                    if s.benchmark_result else None
-                ),
-            }
-            for s in steps
-        ],
+        "id": info["start"]["chain_id"],
+        "total_steps": len(steps),
+        "completed_steps": info["complete"]["completed_steps"],
+        "failed_steps": info["complete"]["failed_steps"],
+        "started_at": info["start"]["started_at"],
+        "finished_at": info["complete"]["finished_at"],
+        "steps": [_step_to_dict(s) for s in steps],
     }
 
 
@@ -754,4 +690,6 @@ async def get_best_worst():
 
 def main():
     import uvicorn
-    uvicorn.run("app.main:app", host="0.0.0.0", port=9090, reload=True)
+    # Bind localhost by default: the app has no auth and serves stored API
+    # keys, so it must not be exposed to the network unintentionally.
+    uvicorn.run("app.main:app", host="127.0.0.1", port=9090)
