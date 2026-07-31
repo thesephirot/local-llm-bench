@@ -1,5 +1,5 @@
 // LLM Benchmark Dashboard
-let presets={},running=false,sortCol='created_at',sortDir='desc',allResults=[],chartInstances={},allSwapConfigs=[],compareSelected=[],chainSelected=new Set();
+let presets={},running=false,sortCol='created_at',sortDir='desc',allResults=[],chartInstances={},allSwapConfigs=[],compareSelected=[],chainSelected=new Set(),swapCfgSelected=[];
 const $=s=>document.getElementById(s);
 const esc=s=>{const d=document.createElement('div');d.textContent=s;return d.innerHTML};
 const fmt=d=>d?new Date(d).toLocaleString():'—';
@@ -10,6 +10,32 @@ const fmtDec=(v,d=1)=>v!=null?v.toFixed(d):'—';
 const api=(p,o={})=>fetch(p,{headers:{'Content-Type':'application/json'},...o}).then(async r=>{if(!r.ok)throw new Error(r.status+': '+await r.text());return r.json()});
 
 (async()=>{await loadPresets();await loadEndpoints();await loadSwapConfigs();checkReady();switchTab('dashboard');})();
+
+// Live chain status bar — polls the backend so progress is visible even
+// after a page reload mid-chain (execution is server-side).
+async function pollChainStatus(){
+  const bar=$('chainStatusBar');if(!bar)return;
+  try{
+    const chains=await api('/api/chain-status');
+    if(!chains.length){bar.classList.add('hidden');bar.classList.remove('flex');return}
+    const c=chains[0];
+    if(c.state==='interrupted'){
+      const at=c.current_step_index!=null?`step ${c.current_step_index+1}/${c.total_steps}: ${c.current_model}`:'unknown step';
+      bar.innerHTML=`<span>⚠️</span><span>Chain interrupted (server restarted?) — stopped at ${esc(at)} · ${c.steps_done} done · results so far are in History</span>`;
+    }else{
+      const cur=c.current_step_index!=null?`step ${c.current_step_index+1}/${c.total_steps}: ${c.current_model}`:'starting…';
+      bar.innerHTML=`<span class="inline-block w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full animate-spin shrink-0"></span><span>Chain running — ${esc(cur)} · ${c.steps_done} done · started ${esc((c.started_at||'').slice(11,19))}</span><button onclick="cancelChain('${esc(c.chain_id)}')" class="ml-auto text-purple-300 hover:text-white border border-purple-700 hover:border-purple-500 rounded px-2 py-0.5">✕ Cancel</button>`;
+    }
+    bar.classList.remove('hidden');bar.classList.add('flex');
+  }catch(e){}
+}
+setInterval(pollChainStatus,5000);pollChainStatus();
+
+async function cancelChain(id){
+  if(!confirm('Cancel the running chain? The current step will finish, remaining steps are skipped.'))return;
+  try{await api(`/api/chains/${id}/cancel`,{method:'POST'})}catch(e){alert(e.message)}
+  pollChainStatus();
+}
 
 function switchTab(n){
   document.querySelectorAll('.tab-panel').forEach(p=>p.classList.add('hidden'));
@@ -67,16 +93,36 @@ async function loadSwapConfigs(){
   if(!allSwapConfigs.length){list.innerHTML='<p class="text-[10px] text-gray-600 px-3">No configs</p>';renderChainConfigList();return}
   for(const cfg of allSwapConfigs){
     const div=document.createElement('div');div.className='group flex items-center gap-2 px-2 py-1 rounded text-xs hover:bg-surface-300 cursor-pointer';
-    div.innerHTML=`<span class="flex-1 truncate" onclick="loadSwapConfig('${cfg.id}')" title="${esc(cfg.model)}">${esc(cfg.name)}</span><span class="text-[9px] text-gray-600 truncate max-w-[80px]">${esc(cfg.model.split('/').pop())}</span><button onclick="editSwapConfig('${cfg.id}')" class="hidden group-hover:inline text-gray-500 hover:text-gray-300 text-[10px]">✏️</button><button onclick="removeSwapConfig('${cfg.id}')" class="hidden group-hover:inline text-red-500 hover:text-red-400 text-[10px]">✕</button>`;
+    div.innerHTML=`<span class="flex-1 truncate" onclick="loadSwapConfig('${cfg.id}')" title="${esc((cfg.models||[]).join(', '))}">${esc(cfg.name)}</span><span class="text-[9px] text-gray-600 truncate max-w-[80px]">×${(cfg.models||[]).length}</span><button onclick="editSwapConfig('${cfg.id}')" class="hidden group-hover:inline text-gray-500 hover:text-gray-300 text-[10px]">✏️</button><button onclick="removeSwapConfig('${cfg.id}')" class="hidden group-hover:inline text-red-500 hover:text-red-400 text-[10px]">✕</button>`;
     list.appendChild(div);
   }
   renderChainConfigList();
 }
-function showSwapConfigModal(){$('swapConfigModal').classList.remove('hidden');$('swapConfigModalTitle').textContent='Save Swap Config';$('swapCfgId').value='';$('swapCfgName').value='';$('swapCfgModel').value='';$('swapCfgMaxTokens').value='2048';$('swapCfgTemp').value='0.7';$('swapCfgNotes').value='';populateSwapConfigEndpoints();populateSwapConfigPresets()}
-function editSwapConfig(id){const cfg=allSwapConfigs.find(c=>c.id===id);if(!cfg)return;$('swapConfigModal').classList.remove('hidden');$('swapConfigModalTitle').textContent='Edit Swap Config';$('swapCfgId').value=id;$('swapCfgName').value=cfg.name;$('swapCfgModel').value=cfg.model;$('swapCfgMaxTokens').value=cfg.max_tokens;$('swapCfgTemp').value=cfg.temperature;$('swapCfgNotes').value=cfg.notes||'';populateSwapConfigEndpoints();populateSwapConfigPresets();$('swapCfgEndpoint').value=cfg.endpoint_id;$('swapCfgPreset').value=cfg.preset_key}
-async function saveSwapConfig(){const id=$('swapCfgId').value,body={name:$('swapCfgName').value,endpoint_id:$('swapCfgEndpoint').value,model:$('swapCfgModel').value,preset_key:$('swapCfgPreset').value,max_tokens:parseInt($('swapCfgMaxTokens').value)||2048,temperature:parseFloat($('swapCfgTemp').value)||0.7,notes:$('swapCfgNotes').value};if(id){body.id=id;await api('/api/swap-configs/'+id,{method:'PUT',body:JSON.stringify(body)})}else await api('/api/swap-configs',{method:'POST',body:JSON.stringify(body)});closeModal('swapConfigModal');await loadSwapConfigs()}
+function showSwapConfigModal(){$('swapConfigModal').classList.remove('hidden');$('swapConfigModalTitle').textContent='Add Swap Config';$('swapCfgId').value='';$('swapCfgName').value='';swapCfgSelected=[];$('swapCfgModelList').innerHTML='<p class="text-gray-600 text-xs">— pick endpoint first —</p>';$('swapCfgMaxTokens').value='2048';$('swapCfgTemp').value='0.7';$('swapCfgNotes').value='';populateSwapConfigEndpoints();populateSwapConfigPresets()}
+async function loadSwapCfgModels(){
+  const epId=$('swapCfgEndpoint').value,el=$('swapCfgModelList');
+  if(!epId){el.innerHTML='<p class="text-gray-600 text-xs">— pick endpoint first —</p>';return}
+  el.innerHTML='<p class="text-gray-600 text-xs">— loading… —</p>';
+  let models=[];
+  try{models=await api('/api/models?endpoint_id='+encodeURIComponent(epId))}
+  catch(e){el.innerHTML=`<p class="text-red-400 text-xs">⚠ ${esc(e.message)}</p>`;return}
+  // keep saved models the endpoint no longer lists, so they stay editable
+  const ids=models.map(m=>m.id);
+  swapCfgSelected.filter(m=>!ids.includes(m)).forEach(m=>models.push({id:m}));
+  el.innerHTML=models.map(m=>{
+    const checked=swapCfgSelected.includes(m.id)?'checked':'';
+    return`<label class="flex items-center gap-1.5 cursor-pointer hover:text-gray-200 text-xs"><input type="checkbox" data-model="${esc(m.id)}" ${checked} onchange="toggleSwapCfgModel(this)" class="rounded bg-surface border-surface-400 text-cyan-500 focus:ring-cyan-500 w-3 h-3"><span class="flex-1 truncate">${esc(m.id)}</span></label>`;
+  }).join('')||'<p class="text-gray-600 text-xs">— no models on this endpoint —</p>';
+}
+function toggleSwapCfgModel(cb){
+  const m=cb.dataset.model;
+  if(cb.checked){if(!swapCfgSelected.includes(m))swapCfgSelected.push(m)}
+  else swapCfgSelected=swapCfgSelected.filter(x=>x!==m);
+}
+async function editSwapConfig(id){const cfg=allSwapConfigs.find(c=>c.id===id);if(!cfg)return;$('swapConfigModal').classList.remove('hidden');$('swapConfigModalTitle').textContent='Edit Swap Config';$('swapCfgId').value=id;$('swapCfgName').value=cfg.name;$('swapCfgMaxTokens').value=cfg.max_tokens;$('swapCfgTemp').value=cfg.temperature;$('swapCfgNotes').value=cfg.notes||'';populateSwapConfigEndpoints();populateSwapConfigPresets();$('swapCfgEndpoint').value=cfg.endpoint_id;$('swapCfgPreset').value=cfg.preset_key;swapCfgSelected=[...(cfg.models||[])];await loadSwapCfgModels()}
+async function saveSwapConfig(){const id=$('swapCfgId').value,body={name:$('swapCfgName').value,endpoint_id:$('swapCfgEndpoint').value,models:[...swapCfgSelected],preset_key:$('swapCfgPreset').value,max_tokens:parseInt($('swapCfgMaxTokens').value)||2048,temperature:parseFloat($('swapCfgTemp').value)||0.7,notes:$('swapCfgNotes').value};if(!body.name||!body.endpoint_id||!body.models.length||!body.preset_key){alert('Name, endpoint, preset and at least one model are required.');return}if(id){body.id=id;await api('/api/swap-configs/'+id,{method:'PUT',body:JSON.stringify(body)})}else await api('/api/swap-configs',{method:'POST',body:JSON.stringify(body)});closeModal('swapConfigModal');await loadSwapConfigs()}
 async function removeSwapConfig(id){if(!confirm('Delete config?'))return;await api('/api/swap-configs/'+id,{method:'DELETE'});await loadSwapConfigs()}
-async function loadSwapConfig(id){const cfg=allSwapConfigs.find(c=>c.id===id);if(!cfg)return;$('selEndpoint').value=cfg.endpoint_id;$('selModel').innerHTML='<option value="">— loading… —</option>';await loadModels();$('selModel').value=cfg.model;$('selPreset').value=cfg.preset_key;$('inpMaxTokens').value=cfg.max_tokens;$('inpTemp').value=cfg.temperature;checkReady()}
+async function loadSwapConfig(id){const cfg=allSwapConfigs.find(c=>c.id===id);if(!cfg)return;$('selEndpoint').value=cfg.endpoint_id;$('selModel').innerHTML='<option value="">— loading… —</option>';await loadModels();$('selModel').value=(cfg.models||[])[0]||'';$('selPreset').value=cfg.preset_key;$('inpMaxTokens').value=cfg.max_tokens;$('inpTemp').value=cfg.temperature;checkReady()}
 function populateSwapConfigEndpoints(){const sel=$('swapCfgEndpoint');if(!sel)return;sel.innerHTML='<option value="">— endpoint —</option>';document.querySelectorAll('#selEndpoint option').forEach(o=>{if(o.value){const opt=document.createElement('option');opt.value=o.value;opt.textContent=o.textContent;sel.appendChild(opt)}})}
 function populateSwapConfigPresets(){const sel=$('swapCfgPreset');if(!sel)return;sel.innerHTML='<option value="">— preset —</option>';for(const[k,p]of Object.entries(presets)){const opt=document.createElement('option');opt.value=k;opt.textContent=p.name;sel.appendChild(opt)}}
 
@@ -87,7 +133,7 @@ function renderChainConfigList(){
   if(!allSwapConfigs.length){el.innerHTML='<p class="text-gray-600">No swap configs — create one first</p>';return}
   el.innerHTML=allSwapConfigs.map(cfg=>{
     const checked=chainSelected.has(cfg.id)?'checked':'';
-    return`<label class="flex items-center gap-1.5 cursor-pointer hover:text-gray-200"><input type="checkbox" data-cfg-id="${esc(cfg.id)}" ${checked} onchange="toggleChainConfig(this)" class="rounded bg-surface border-surface-400 text-purple-500 focus:ring-purple-500 w-3 h-3"><span class="flex-1 truncate">${esc(cfg.name)}</span><span class="text-gray-600 shrink-0">${esc(cfg.model.split('/').pop())}</span></label>`;
+    return`<label class="flex items-center gap-1.5 cursor-pointer hover:text-gray-200"><input type="checkbox" data-cfg-id="${esc(cfg.id)}" ${checked} onchange="toggleChainConfig(this)" class="rounded bg-surface border-surface-400 text-purple-500 focus:ring-purple-500 w-3 h-3"><span class="flex-1 truncate" title="${esc((cfg.models||[]).join(', '))}">${esc(cfg.name)}</span><span class="text-gray-600 shrink-0">×${(cfg.models||[]).length}</span></label>`;
   }).join('');
 }
 
@@ -102,9 +148,15 @@ function updateRunChainButton(){
 
 async function runChainBenchmarkStream(){
   if(running||chainSelected.size===0)return;
-  running=true;updateRunChainButton();switchTab('dashboard');
+  running=true;updateRunChainButton();
+  // Drop configs that were deleted since the page loaded
+  try{await loadSwapConfigs()}catch(e){}
+  const valid=new Set(allSwapConfigs.map(c=>c.id));
+  chainSelected.forEach(id=>{if(!valid.has(id))chainSelected.delete(id)});
+  if(chainSelected.size===0){running=false;updateRunChainButton();switchTab('dashboard');$('panel-dashboard').innerHTML='<div class="text-center py-24 text-gray-400"><p>No valid configs selected — they may have been deleted.</p></div>';return}
+  switchTab('dashboard');
   const panel=$('panel-dashboard');
-  panel.innerHTML=`<div class="max-w-4xl mx-auto space-y-4 fade-in"><h2 class="text-lg font-semibold">Chain Run</h2><p class="text-sm text-gray-400">Running ${chainSelected.size} LLM${chainSelected.size>1?'s':''} in sequence…</p><div id="chainProgress"></div></div>`;
+  panel.innerHTML=`<div class="max-w-4xl mx-auto space-y-4 fade-in"><h2 class="text-lg font-semibold">Chain Run</h2><p id="chainSubtitle" class="text-sm text-gray-400">Starting chain…</p><div id="chainProgress"></div></div>`;
   const progress=$('chainProgress');
 
   try{
@@ -141,13 +193,18 @@ async function runChainBenchmarkStream(){
           const data=JSON.parse(dataStr);
           if(eventType==='start'){
             chainId=data.chain_id||'';
+            const n=data.total_steps||0,sub=$('chainSubtitle');
+            if(sub&&n)sub.textContent=`Running ${n} LLM${n>1?'s':''} in sequence…`;
+          }else if(eventType==='step_start'){
+            renderStreamStepStart(progress,data);
           }else if(eventType==='step'){
             renderStreamStep(progress,data);
             stepCount++;
           }else if(eventType==='complete'){
             completedCount=data.completed_steps||0;
             failedCount=data.failed_steps||0;
-            renderStreamComplete(progress,completedCount,failedCount);
+            historyFilterSrc=null;
+            renderStreamComplete(progress,completedCount,failedCount,data.cancelled);
           }else if(eventType==='error'){
             progress.innerHTML+=`<div class="text-center py-4 text-red-400"><p>Error: ${esc(data.message)}</p></div>`;
           }
@@ -163,6 +220,14 @@ async function runChainBenchmarkStream(){
   }
 }
 
+function renderStreamStepStart(progress,data){
+  const card=document.createElement('div');
+  card.id='chain-step-'+data.step_index;
+  card.className='flex items-center gap-3 bg-surface rounded-lg px-4 py-2 text-sm fade-in border border-cyan-900/40';
+  card.innerHTML=`<span class="inline-block w-3 h-3 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin shrink-0"></span><div class="flex-1"><div class="font-medium">${esc(data.config_name)}</div><div class="text-xs text-gray-500">${esc(data.model)} · <span class="chain-step-status">running…</span></div></div><span class="text-xs text-gray-600 shrink-0">step ${data.step_index+1}/${data.total_steps}</span>`;
+  progress.appendChild(card);
+}
+
 function renderStreamStep(progress,data){
   const icon=data.success?'✅':'❌';
   const status=data.success?'completed':(data.error||'failed');
@@ -170,13 +235,14 @@ function renderStreamStep(progress,data){
   const card=document.createElement('div');
   card.className='flex items-center gap-3 bg-surface rounded-lg px-4 py-2 text-sm fade-in';
   card.innerHTML=`<span>${icon}</span><div class="flex-1"><div class="font-medium">${esc(data.config_name)}</div><div class="text-xs text-gray-500">${esc(data.model)} · ${esc(status)}${metrics}</div></div><span class="text-xs text-gray-600 shrink-0">step ${data.step_index+1}</span>`;
-  progress.appendChild(card);
+  const placeholder=$('chain-step-'+data.step_index);
+  if(placeholder)placeholder.replaceWith(card);else progress.appendChild(card);
 }
 
-function renderStreamComplete(progress,completedCount,failedCount){
+function renderStreamComplete(progress,completedCount,failedCount,cancelled){
   const summary=document.createElement('div');
   summary.className='flex gap-4 mt-4 text-xs text-gray-500';
-  summary.innerHTML=`<span>Total: ${completedCount+failedCount}</span><span>Completed: ${completedCount}</span><span>Failed: ${failedCount}</span>`;
+  summary.innerHTML=`<span>Total: ${completedCount+failedCount}</span><span>Completed: ${completedCount}</span><span>Failed: ${failedCount}</span>${cancelled?'<span class="text-amber-400">⚠ cancelled — remaining steps skipped</span>':''}`;
   progress.appendChild(summary);
 }
 
@@ -194,6 +260,7 @@ async function runBenchmark(){
 
 // Dashboard
 async function loadDashboard(){
+  historyFilterSrc=null; // new runs may have added models/presets
   const[summary,bestWorst]=await Promise.all([api('/api/summary'),api('/api/best-worst')]);
   const panel=$('panel-dashboard'),s=summary;
   panel.innerHTML=`<div class="max-w-7xl mx-auto space-y-5 fade-in">
@@ -215,25 +282,32 @@ function buildModelTable(s){
 }
 
 // History
+let historyFilterSrc=null; // unfiltered snapshot backing the filter dropdowns
 async function loadHistory(){
   const p=new URLSearchParams();const fm=$('filterModel')?.value,fp=$('filterPreset')?.value,fe=$('filterEndpoint')?.value,fd=$('filterFrom')?.value,td=$('filterTo')?.value;
   if(fm)p.set('model',fm);if(fp)p.set('preset',fp);if(fe)p.set('endpoint',fe);if(fd)p.set('from_date',fd);if(td)p.set('to_date',td);
-  allResults=await api('/api/history?'+p.toString());populateHistoryFilters();renderHistoryTable();
+  if(!historyFilterSrc)historyFilterSrc=await api('/api/history?limit=500');
+  allResults=await api('/api/history?'+p.toString());
+  renderHistoryTable();
+  populateHistoryFilters(fm,fp,fe,fd,td);
 }
-function populateHistoryFilters(){
-  const fm=$('filterModel');if(!fm)return;const c=fm.value;fm.innerHTML='<option value="">All Models</option>'+[...new Set(allResults.map(r=>r.model))].sort().map(m=>`<option ${m===c?'selected':''}>${esc(m)}</option>`).join('');
-  const fp=$('filterPreset');if(!fp)return;const c2=fp.value;fp.innerHTML='<option value="">All Presets</option>'+[...new Set(allResults.map(r=>r.preset_name))].sort().map(p=>`<option ${p===c2?'selected':''}>${esc(p)}</option>`).join('');
-  const fe=$('filterEndpoint');if(!fe)return;const c3=fe.value;fe.innerHTML='<option value="">All Endpoints</option>'+[...new Set(allResults.map(r=>r.endpoint_id))].sort().map(e=>{const ep=allResults.find(r=>r.endpoint_id===e);return`<option value="${e}" ${e===c3?'selected':''}>${esc(ep?.endpoint_name||e)}</option>`}).join('');
+function populateHistoryFilters(sm,sp,se,sd,std){
+  const src=historyFilterSrc||allResults;
+  const fm=$('filterModel');if(!fm)return;
+  fm.innerHTML='<option value="">All Models</option>'+[...new Set(src.map(r=>r.model))].sort().map(m=>`<option ${m===sm?'selected':''}>${esc(m)}</option>`).join('');
+  const fp=$('filterPreset');fp.innerHTML='<option value="">All Presets</option>'+[...new Set(src.map(r=>r.preset_name))].sort().map(p=>`<option ${p===sp?'selected':''}>${esc(p)}</option>`).join('');
+  const fe=$('filterEndpoint');fe.innerHTML='<option value="">All Endpoints</option>'+[...new Set(src.map(r=>r.endpoint_id))].sort().map(e=>{const ep=src.find(r=>r.endpoint_id===e);return`<option value="${e}" ${e===se?'selected':''}>${esc(ep?.endpoint_name||e)}</option>`}).join('');
+  $('filterFrom').value=sd||'';$('filterTo').value=std||'';
 }
 function renderHistoryTable(){
   const panel=$('panel-history'),sorted=[...allResults].sort((a,b)=>{let va=a[sortCol],vb=b[sortCol];if(sortCol==='created_at')return sortDir==='asc'?va.localeCompare(vb):vb.localeCompare(va);va=Number(va)||0;vb=Number(vb)||0;return sortDir==='asc'?va-vb:vb-va});
   const cl={created_at:'Date',endpoint_name:'Endpoint',model:'Model',preset_name:'Preset',total_time_ms:'Latency',time_to_first_token_ms:'TTFT',tokens_per_second:'Tok/s',completion_tokens:'Tokens',output_length:'Len'},lc=['created_at','endpoint_name','model','preset_name'];
-  panel.innerHTML=`<div class="max-w-7xl mx-auto space-y-4 fade-in"><div class="flex items-center justify-between"><h2 class="text-lg font-semibold">History (${allResults.length} runs)</h2><div class="flex gap-2"><button onclick="loadHistory()" class="px-3 py-1.5 text-xs bg-surface-200 hover:bg-surface-300 border border-surface-400 rounded-lg">↻ Refresh</button><button onclick="clearAllResults()" class="px-3 py-1.5 text-xs bg-red-900/30 hover:bg-red-900/50 border border-red-800/50 text-red-400 rounded-lg">Clear All</button></div></div><div class="flex flex-wrap gap-3"><select id="filterModel" onchange="loadHistory()" class="bg-surface-200 border border-surface-400 rounded-lg px-3 py-1.5 text-xs"><option value="">All Models</option></select><select id="filterPreset" onchange="loadHistory()" class="bg-surface-200 border border-surface-400 rounded-lg px-3 py-1.5 text-xs"><option value="">All Presets</option></select><select id="filterEndpoint" onchange="loadHistory()" class="bg-surface-200 border border-surface-400 rounded-lg px-3 py-1.5 text-xs"><option value="">All Endpoints</option></select><input type="date" id="filterFrom" onchange="loadHistory()" class="bg-surface-200 border border-surface-400 rounded-lg px-3 py-1.5 text-xs" title="From"><input type="date" id="filterTo" onchange="loadHistory()" class="bg-surface-200 border border-surface-400 rounded-lg px-3 py-1.5 text-xs" title="To"></div><div class="bg-surface-200 border border-surface-300 rounded-xl overflow-hidden"><div class="overflow-x-auto"><table class="sortable w-full text-sm"><thead><tr class="border-b border-surface-300 bg-surface/80">${Object.keys(cl).map(c=>`<th class="text-${lc.includes(c)?'left':'right'} px-4 py-2 text-xs font-semibold text-gray-400 uppercase" onclick="handleSort('${c}')">${cl[c]}${sortCol===c?(sortDir==='asc'?' ▲':' ▼'):''}</th>`).join('')}<th class="px-4 py-2"></th></tr></thead><tbody class="divide-y divide-surface-300/50">${sorted.length?sorted.map(r=>`<tr class="hover:bg-surface-300/50"><td class="px-4 py-2 text-xs text-gray-300">${r.success?'':`<span class="text-red-400" title="${esc(r.error||'failed').replace(/"/g,'&quot;')}">⚠ </span>`}${fmt(r.created_at)}</td><td class="px-4 py-2 text-xs">${esc(r.endpoint_name)}</td><td class="px-4 py-2 text-xs font-medium">${esc(r.model)}</td><td class="px-4 py-2 text-xs text-gray-400">${esc(r.preset_name)}</td><td class="px-4 py-2 text-xs text-right">${fmtSec(r.total_time_ms)}</td><td class="px-4 py-2 text-xs text-right">${fmtMs(r.time_to_first_token_ms)}</td><td class="px-4 py-2 text-xs text-right text-cyan-400 font-medium">${fmtDec(r.tokens_per_second)}</td><td class="px-4 py-2 text-xs text-right">${fmtNum(r.completion_tokens)}</td><td class="px-4 py-2 text-xs text-right">${fmtNum(r.output_length)}</td><td class="px-4 py-2 text-right whitespace-nowrap"><button onclick="showDetail('${r.id}')" class="text-cyan-400 hover:text-cyan-300 text-xs mr-2">View</button><button onclick="deleteResult('${r.id}')" class="text-red-500 hover:text-red-400 text-xs">✕</button></td></tr>`).join(''):'<tr><td colspan="10" class="text-center py-12 text-gray-600 text-sm">No results</td></tr>'}</tbody></table></div></div></div>`;
+  panel.innerHTML=`<div class="max-w-7xl mx-auto space-y-4 fade-in"><div class="flex items-center justify-between"><h2 class="text-lg font-semibold">History (${allResults.length} runs)</h2><div class="flex gap-2"><button onclick="historyFilterSrc=null;loadHistory()" class="px-3 py-1.5 text-xs bg-surface-200 hover:bg-surface-300 border border-surface-400 rounded-lg">↻ Refresh</button><button onclick="clearAllResults()" class="px-3 py-1.5 text-xs bg-red-900/30 hover:bg-red-900/50 border border-red-800/50 text-red-400 rounded-lg">Clear All</button></div></div><div class="flex flex-wrap gap-3"><select id="filterModel" onchange="loadHistory()" class="bg-surface-200 border border-surface-400 rounded-lg px-3 py-1.5 text-xs"><option value="">All Models</option></select><select id="filterPreset" onchange="loadHistory()" class="bg-surface-200 border border-surface-400 rounded-lg px-3 py-1.5 text-xs"><option value="">All Presets</option></select><select id="filterEndpoint" onchange="loadHistory()" class="bg-surface-200 border border-surface-400 rounded-lg px-3 py-1.5 text-xs"><option value="">All Endpoints</option></select><input type="date" id="filterFrom" onchange="loadHistory()" class="bg-surface-200 border border-surface-400 rounded-lg px-3 py-1.5 text-xs" title="From"><input type="date" id="filterTo" onchange="loadHistory()" class="bg-surface-200 border border-surface-400 rounded-lg px-3 py-1.5 text-xs" title="To"></div><div class="bg-surface-200 border border-surface-300 rounded-xl overflow-hidden"><div class="overflow-x-auto"><table class="sortable w-full text-sm"><thead><tr class="border-b border-surface-300 bg-surface/80">${Object.keys(cl).map(c=>`<th class="text-${lc.includes(c)?'left':'right'} px-4 py-2 text-xs font-semibold text-gray-400 uppercase" onclick="handleSort('${c}')">${cl[c]}${sortCol===c?(sortDir==='asc'?' ▲':' ▼'):''}</th>`).join('')}<th class="px-4 py-2"></th></tr></thead><tbody class="divide-y divide-surface-300/50">${sorted.length?sorted.map(r=>`<tr class="hover:bg-surface-300/50"><td class="px-4 py-2 text-xs text-gray-300">${r.success?'':`<span class="text-red-400" title="${esc(r.error||'failed').replace(/"/g,'&quot;')}">⚠ </span>`}${fmt(r.created_at)}</td><td class="px-4 py-2 text-xs">${esc(r.endpoint_name)}</td><td class="px-4 py-2 text-xs font-medium">${esc(r.model)}</td><td class="px-4 py-2 text-xs text-gray-400">${esc(r.preset_name)}</td><td class="px-4 py-2 text-xs text-right">${fmtSec(r.total_time_ms)}</td><td class="px-4 py-2 text-xs text-right">${fmtMs(r.time_to_first_token_ms)}</td><td class="px-4 py-2 text-xs text-right text-cyan-400 font-medium">${fmtDec(r.tokens_per_second)}</td><td class="px-4 py-2 text-xs text-right">${fmtNum(r.completion_tokens)}</td><td class="px-4 py-2 text-xs text-right">${fmtNum(r.output_length)}</td><td class="px-4 py-2 text-right whitespace-nowrap"><button onclick="showDetail('${r.id}')" class="text-cyan-400 hover:text-cyan-300 text-xs mr-2">View</button><button onclick="deleteResult('${r.id}')" class="text-red-500 hover:text-red-400 text-xs">✕</button></td></tr>`).join(''):'<tr><td colspan="10" class="text-center py-12 text-gray-600 text-sm">No results</td></tr>'}</tbody></table></div></div></div>`;
 }
 function handleSort(c){if(sortCol===c)sortDir=sortDir==='asc'?'desc':'asc';else{sortCol=c;sortDir='desc'}renderHistoryTable()}
 async function showDetail(id){const r=await api('/api/results/'+id);$('detailTitle').textContent=r.endpoint_name+' / '+r.model;$('detailMeta').textContent=r.preset_name+' · '+fmt(r.created_at);$('detailStats').innerHTML=[{l:'TTFT',v:fmtMs(r.time_to_first_token_ms)},{l:'Total',v:fmtSec(r.total_time_ms)},{l:'Tok/s',v:fmtDec(r.tokens_per_second)},{l:'Tokens',v:fmtNum(r.completion_tokens)},{l:'Output',v:(r.output_length||0).toLocaleString()+' ch'}].map(s=>`<div class="bg-surface rounded-lg p-2 text-center"><div class="text-base font-bold text-cyan-400">${s.v}</div><div class="text-xs text-gray-500">${s.l}</div></div>`).join('');$('detailPrompt').textContent=r.prompt;$('detailResponse').textContent=r.response;$('detailModal').classList.remove('hidden')}
-async function deleteResult(id){await api('/api/results/'+id,{method:'DELETE'});loadHistory()}
-async function clearAllResults(){if(!confirm('Clear all?'))return;await api('/api/results',{method:'DELETE'});loadHistory()}
+async function deleteResult(id){await api('/api/results/'+id,{method:'DELETE'});historyFilterSrc=null;loadHistory()}
+async function clearAllResults(){if(!confirm('Clear all?'))return;await api('/api/results',{method:'DELETE'});historyFilterSrc=null;loadHistory()}
 
 // Compare
 async function loadCompare(){

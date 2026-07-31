@@ -78,7 +78,7 @@ def wired_config(client, llm_server):
     ep = EndpointConfig(name="Fake", base_url=llm_server)
     db.save_endpoint(ep)
     cfg = LlamaSwapConfig(name="FakeCfg", endpoint_id=ep.id, endpoint_name=ep.name,
-                          model="fake-model", preset_key="simple")
+                          models=["fake-model"], preset_key="simple")
     db.save_swap_config(cfg)
     return ep, cfg
 
@@ -121,7 +121,7 @@ def test_chain_network_error_real_path(client, _db_path):
     ep = EndpointConfig(name="Down", base_url="http://127.0.0.1:1")
     db.save_endpoint(ep)
     cfg = LlamaSwapConfig(name="DownCfg", endpoint_id=ep.id, endpoint_name=ep.name,
-                          model="m", preset_key="simple")
+                          models=["m"], preset_key="simple")
     db.save_swap_config(cfg)
 
     r = client.post("/api/run-chain", json={"config_ids": [cfg.id]})
@@ -199,7 +199,7 @@ def test_sse_stream_events_all_valid_json(client, wired_config):
         if kind == "step":
             assert parsed["success"] is True
             assert parsed["benchmark_result"]["completion_tokens"] == 2
-    assert kinds == ["start", "step", "complete"]
+    assert kinds == ["start", "step_start", "step", "complete"]
 
 
 # ── Stats exclusion of failed runs (review bug #1 fallout) ─
