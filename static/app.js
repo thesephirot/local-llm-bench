@@ -21,7 +21,7 @@ async function pollChainStatus(){
     const c=chains[0];
     if(c.state==='interrupted'){
       const at=c.current_step_index!=null?`step ${c.current_step_index+1}/${c.total_steps}: ${c.current_model}`:'unknown step';
-      bar.innerHTML=`<span>⚠️</span><span>Chain interrupted (server restarted?) — stopped at ${esc(at)} · ${c.steps_done} done · results so far are in History</span>`;
+      bar.innerHTML=`<span>⚠️</span><span>Chain interrupted (server restarted?) — stopped at ${esc(at)} · ${c.steps_done} done · results so far are in History</span><button onclick="dismissChain('${esc(c.chain_id)}')" class="ml-auto text-purple-300 hover:text-white border border-purple-700 hover:border-purple-500 rounded px-2 py-0.5">✕ Dismiss</button>`;
     }else{
       const cur=c.current_step_index!=null?`step ${c.current_step_index+1}/${c.total_steps}: ${c.current_model}`:'starting…';
       bar.innerHTML=`<span class="inline-block w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full animate-spin shrink-0"></span><span>Chain running — ${esc(cur)} · ${c.steps_done} done · started ${esc((c.started_at||'').slice(11,19))}</span><button onclick="cancelChain('${esc(c.chain_id)}')" class="ml-auto text-purple-300 hover:text-white border border-purple-700 hover:border-purple-500 rounded px-2 py-0.5">✕ Cancel</button>`;
@@ -34,6 +34,12 @@ setInterval(pollChainStatus,5000);pollChainStatus();
 async function cancelChain(id){
   if(!confirm('Cancel the running chain immediately? The current step is aborted (partial result discarded) and remaining steps are skipped.'))return;
   try{await api(`/api/chains/${id}/cancel`,{method:'POST'})}catch(e){alert(e.message)}
+  pollChainStatus();
+}
+
+async function dismissChain(id){
+  if(!confirm('Dismiss this interrupted chain? The chain record is deleted; the benchmark results stay in History.'))return;
+  try{await api(`/api/chains/${id}`,{method:'DELETE'})}catch(e){alert(e.message)}
   pollChainStatus();
 }
 
