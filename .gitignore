@@ -4,3 +4,4 @@ __pycache__/
 benchmarks.db
 .venv/
 .pi-subagents/
+.pi/**
