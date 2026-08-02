@@ -180,6 +180,8 @@ async def _execute_chain(config_ids: list[str]):
         "current_model": "",
         "steps_done": 0,
     }
+    cancel_event = asyncio.Event()
+    _CANCEL_EVENTS[chain_result.id] = cancel_event
 
     # Resolve presets once
     presets = await _db_sync(db.presets_as_dict)
@@ -190,7 +192,7 @@ async def _execute_chain(config_ids: list[str]):
 
     try:
       for step in steps:
-        if chain_result.id in _CANCEL_REQUESTED:
+        if cancel_event.is_set():
             cancelled = True
             break
         _ACTIVE_CHAINS[chain_result.id].update(
@@ -216,40 +218,62 @@ async def _execute_chain(config_ids: list[str]):
             else:
                 preset_name = cfg.preset_key or "simple"
                 preset = presets.get(preset_name, {})
-                try:
-                    br = await _run_single_benchmark(
-                        endpoint=ep,
-                        model=step.model,
-                        preset_name=preset.get("name", preset_name),
-                        preset_prompt=preset.get("prompt", "Hello, how are you today?"),
-                        max_tokens=cfg.max_tokens,
-                        temperature=cfg.temperature,
-                    )
-                    # _run_single_benchmark returns a discriminated result:
-                    # failures (HTTP/timeout/network) come back with success=False.
-                    step.benchmark_result = br
-                    step.success = br.success
-                    if not br.success:
-                        step.error = br.error
-                        step.error_category = br.error_category or ErrorCategory.OTHER.value
-                        step.status_code = br.status_code
-                except httpx.TimeoutException as e:
-                    step.error = str(e)
-                    step.error_category = ErrorCategory.TIMEOUT.value
+                # Run the benchmark as a task raced against the cancel event:
+                # a cancel request aborts the in-flight HTTP request
+                # immediately instead of waiting for it to finish or time out.
+                bench_task = asyncio.create_task(_run_single_benchmark(
+                    endpoint=ep,
+                    model=step.model,
+                    preset_name=preset.get("name", preset_name),
+                    preset_prompt=preset.get("prompt", "Hello, how are you today?"),
+                    max_tokens=cfg.max_tokens,
+                    temperature=cfg.temperature,
+                ))
+                cancel_task = asyncio.create_task(cancel_event.wait())
+                done, _ = await asyncio.wait({bench_task, cancel_task},
+                                             return_when=asyncio.FIRST_COMPLETED)
+                if cancel_task in done and not bench_task.done():
+                    # Immediate cancel: abort the in-flight request. The
+                    # partial benchmark result is discarded; the chain step
+                    # is still persisted below as cancelled.
+                    bench_task.cancel()
+                    try:
+                        await bench_task
+                    except asyncio.CancelledError:
+                        pass
+                    step.error = "Cancelled by user"
+                    step.error_category = ErrorCategory.CANCELLED.value
                     step.success = False
-                except (httpx.ConnectError, httpx.NetworkError) as e:
-                    step.error = str(e)
-                    step.error_category = ErrorCategory.NETWORK.value
-                    step.success = False
-                except httpx.HTTPStatusError as e:
-                    step.error = f"HTTP {e.response.status_code}: {e.response.text}"
-                    step.error_category = ErrorCategory.HTTP_ERROR.value
-                    step.status_code = e.response.status_code
-                    step.success = False
-                except Exception as e:
-                    step.error = str(e)
-                    step.error_category = ErrorCategory.OTHER.value
-                    step.success = False
+                    cancelled = True
+                else:
+                    cancel_task.cancel()
+                    try:
+                        br = await bench_task
+                        # _run_single_benchmark returns a discriminated result:
+                        # failures (HTTP/timeout/network) come back with success=False.
+                        step.benchmark_result = br
+                        step.success = br.success
+                        if not br.success:
+                            step.error = br.error
+                            step.error_category = br.error_category or ErrorCategory.OTHER.value
+                            step.status_code = br.status_code
+                    except httpx.TimeoutException as e:
+                        step.error = str(e)
+                        step.error_category = ErrorCategory.TIMEOUT.value
+                        step.success = False
+                    except (httpx.ConnectError, httpx.NetworkError) as e:
+                        step.error = str(e)
+                        step.error_category = ErrorCategory.NETWORK.value
+                        step.success = False
+                    except httpx.HTTPStatusError as e:
+                        step.error = f"HTTP {e.response.status_code}: {e.response.text}"
+                        step.error_category = ErrorCategory.HTTP_ERROR.value
+                        step.status_code = e.response.status_code
+                        step.success = False
+                    except Exception as e:
+                        step.error = str(e)
+                        step.error_category = ErrorCategory.OTHER.value
+                        step.success = False
 
         if step.success:
             completed += 1
@@ -271,7 +295,7 @@ async def _execute_chain(config_ids: list[str]):
                           "finished_at": chain_result.finished_at})
     finally:
         _ACTIVE_CHAINS.pop(chain_result.id, None)
-        _CANCEL_REQUESTED.discard(chain_result.id)
+        _CANCEL_EVENTS.pop(chain_result.id, None)
 
 
 # Background chain executions, kept referenced so the event loop doesn't
@@ -282,9 +306,10 @@ _BACKGROUND_TASKS: set[asyncio.Task] = set()
 # _execute_chain; entries are removed when a chain finishes (or fails).
 _ACTIVE_CHAINS: dict[str, dict] = {}
 
-# Chain ids for which cancellation was requested (cooperative: takes
-# effect after the currently running step finishes).
-_CANCEL_REQUESTED: set[str] = set()
+# Per-chain cancellation events, keyed by chain id. Setting the event
+# aborts the step currently in flight immediately (its HTTP request is
+# cancelled) and skips all remaining steps.
+_CANCEL_EVENTS: dict[str, asyncio.Event] = {}
 
 # Unfinished chains whose last heartbeat is older than this are reported
 # as "interrupted" rather than "running" by /api/chain-status. Must
@@ -788,12 +813,14 @@ async def chain_status():
 
 @app.post("/api/chains/{chain_id}/cancel")
 async def cancel_chain(chain_id: str):
-    """Request cooperative cancellation: the chain stops after the step
-    currently in flight; remaining steps are skipped and the chain record
-    is finalized as cancelled."""
-    if chain_id not in _ACTIVE_CHAINS:
+    """Cancel a running chain immediately: the step currently in flight
+    is aborted (its HTTP request is cancelled and the partial result
+    discarded), remaining steps are skipped, and the chain record is
+    finalized as cancelled."""
+    ev = _CANCEL_EVENTS.get(chain_id)
+    if ev is None:
         raise HTTPException(409, "Chain is not running on this server")
-    _CANCEL_REQUESTED.add(chain_id)
+    ev.set()
     return {"ok": True}
 
 

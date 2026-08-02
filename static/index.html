@@ -39,7 +39,7 @@ canvas[id^="chart"]{width:100%!important;height:220px!important;max-height:220px
 
   <div class="p-4 border-b border-surface-300">
     <div class="flex items-center justify-between mb-2">
-      <h2 class="text-xs font-semibold uppercase tracking-wider text-gray-400">Swap Configs</h2>
+      <h2 class="text-xs font-semibold uppercase tracking-wider text-gray-400">Chain Configs</h2>
       <button onclick="showSwapConfigModal()" class="text-cyan-400 hover:text-cyan-300 text-sm font-medium">+ Add</button>
     </div>
     <div id="swapConfigList" class="space-y-1 max-h-36 overflow-y-auto"></div>
@@ -73,7 +73,7 @@ canvas[id^="chart"]{width:100%!important;height:220px!important;max-height:220px
       <div class="flex-1 min-w-[200px]">
         <label class="block text-xs text-gray-400 mb-1">Chain LLMs</label>
         <div id="chainConfigList" class="bg-surface border border-surface-400 rounded-lg px-3 py-1.5 max-h-28 overflow-y-auto text-xs space-y-0.5">
-          <p class="text-gray-600">No swap configs — create one first</p>
+          <p class="text-gray-600">No chain configs — create one first</p>
         </div>
       </div>
       <button id="btnRunChain" onclick="runChainBenchmarkStream()" disabled class="bg-purple-600 hover:bg-purple-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold rounded-lg px-5 py-2 text-sm transition-colors">Run Chain</button>
@@ -135,10 +135,10 @@ canvas[id^="chart"]{width:100%!important;height:220px!important;max-height:220px
   </div>
 </div>
 
-<!-- Swap config modal -->
+<!-- Chain config modal -->
 <div id="swapConfigModal" class="hidden fixed inset-0 bg-black/60 z-50 flex items-center justify-center">
   <div class="bg-surface-200 border border-surface-400 rounded-xl w-full max-w-lg p-6 fade-in">
-    <h3 id="swapConfigModalTitle" class="text-lg font-semibold mb-4">Save Swap Config</h3><input type="hidden" id="swapCfgId">
+    <h3 id="swapConfigModalTitle" class="text-lg font-semibold mb-4">Save Chain Config</h3><input type="hidden" id="swapCfgId">
     <div class="space-y-3">
       <div><label class="block text-xs text-gray-400 mb-1">Config Name</label><input id="swapCfgName" class="w-full bg-surface border border-surface-400 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500" placeholder="My Config"></div>
       <div class="grid grid-cols-2 gap-3">
