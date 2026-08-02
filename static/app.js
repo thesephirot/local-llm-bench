@@ -32,7 +32,7 @@ async function pollChainStatus(){
 setInterval(pollChainStatus,5000);pollChainStatus();
 
 async function cancelChain(id){
-  if(!confirm('Cancel the running chain? The current step will finish, remaining steps are skipped.'))return;
+  if(!confirm('Cancel the running chain immediately? The current step is aborted (partial result discarded) and remaining steps are skipped.'))return;
   try{await api(`/api/chains/${id}/cancel`,{method:'POST'})}catch(e){alert(e.message)}
   pollChainStatus();
 }

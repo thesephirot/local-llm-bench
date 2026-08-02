@@ -226,6 +226,71 @@ def test_cancel_chain_not_running(client):
     assert r.status_code == 409
 
 
+def test_immediate_cancel_aborts_inflight_step(client):
+    """Cancel must abort the in-flight benchmark immediately — the chain
+    finalizes as cancelled without waiting for the stuck step, and the
+    remaining steps never start."""
+    import asyncio
+    import threading
+    import time
+    from app import database as db
+    from app.models import LlamaSwapConfig
+
+    ep_id = "test-ep-" + __import__("uuid").uuid4().hex[:8]
+    cfg_id = "test-cfg-" + __import__("uuid").uuid4().hex[:8]
+    ep = db.EndpointConfig(id=ep_id, name="Test", base_url="http://localhost:9999", api_key="x")
+    db.save_endpoint(ep)
+    cfg = LlamaSwapConfig(id=cfg_id, name="TestCfg", endpoint_id=ep_id, endpoint_name="Test",
+                          models=["model-a", "model-b"], preset_key="simple")
+    db.save_swap_config(cfg)
+
+    async def hang_forever(*args, **kwargs):
+        # Simulates a stuck LLM server: the stream never delivers bytes.
+        await asyncio.sleep(3600)
+
+    result_holder = {}
+
+    def run_chain():
+        result_holder["resp"] = client.post("/api/run-chain", json={"config_ids": [cfg_id]})
+
+    with patch("app.main._run_single_benchmark", new=hang_forever):
+        t = threading.Thread(target=run_chain, daemon=True)
+        t.start()
+
+        # Wait until the chain is registered as running.
+        chain_id = None
+        for _ in range(100):
+            time.sleep(0.05)
+            running = [c for c in client.get("/api/chain-status").json()
+                       if c["state"] == "running"]
+            if running:
+                chain_id = running[0]["chain_id"]
+                break
+        assert chain_id, "chain never showed up as running"
+
+        started = time.monotonic()
+        r = client.post(f"/api/chains/{chain_id}/cancel")
+        assert r.status_code == 200
+
+        t.join(timeout=10)
+        elapsed = time.monotonic() - started
+        assert not t.is_alive(), "chain did not finish after cancel"
+        assert elapsed < 5, f"cancel took {elapsed:.1f}s — not immediate"
+
+        body = result_holder["resp"].json()
+        assert body["cancelled"] is True
+        assert len(body["steps"]) == 1, "second step must not start after cancel"
+        step = body["steps"][0]
+        assert not step["success"]
+        assert step["error_category"] == ErrorCategory.CANCELLED.value
+
+        # Chain must be finalized — no longer reported as running/unfinished.
+        assert client.get("/api/chain-status").json() == []
+
+    db.delete_swap_config(cfg_id)
+    db.delete_endpoint(ep_id)
+
+
 def test_chain_status_reports_interrupted_for_stale_chain(client):
     """An unfinished chain with no heartbeat must show as interrupted."""
     from app.models import ChainRunResult
