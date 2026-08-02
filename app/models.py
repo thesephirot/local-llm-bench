@@ -105,4 +105,5 @@ class ErrorCategory(str, Enum):
     HTTP_ERROR = "http_error"
     TIMEOUT = "timeout"
     NETWORK = "network"
+    CANCELLED = "cancelled"
     OTHER = "other"
