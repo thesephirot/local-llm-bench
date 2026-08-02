@@ -5,3 +5,4 @@ benchmarks.db
 .venv/
 .pi-subagents/
 .pi/**
+AGENTS.md
