@@ -93,7 +93,7 @@ async function removeEndpoint(id){if(!confirm('Delete endpoint?'))return;await a
 async function loadModels(){const epId=$('selEndpoint').value,sel=$('selModel');sel.innerHTML='<option value="">— loading… —</option>';try{const models=await api('/api/models?endpoint_id='+epId);sel.innerHTML='<option value="">— model —</option>';models.forEach(m=>{const o=document.createElement('option');o.value=m.id;o.textContent=m.id;sel.appendChild(o)})}catch(e){sel.innerHTML=`<option value="">⚠ ${esc(e.message)}</option>`}sel.onchange=checkReady;checkReady()}
 function checkReady(){const ep=$('selEndpoint')?.value||'',md=$('selModel')?.value||'',ps=$('selPreset')?.value||'',btn=$('btnRun');if(btn)btn.disabled=!(ep&&md&&ps)||running}
 
-// Swap Configs
+// Chain Configs
 async function loadSwapConfigs(){
   allSwapConfigs=await api('/api/swap-configs');const list=$('swapConfigList');list.innerHTML='';
   if(!allSwapConfigs.length){list.innerHTML='<p class="text-[10px] text-gray-600 px-3">No configs</p>';renderChainConfigList();return}
@@ -104,7 +104,7 @@ async function loadSwapConfigs(){
   }
   renderChainConfigList();
 }
-function showSwapConfigModal(){$('swapConfigModal').classList.remove('hidden');$('swapConfigModalTitle').textContent='Add Swap Config';$('swapCfgId').value='';$('swapCfgName').value='';swapCfgSelected=[];$('swapCfgModelList').innerHTML='<p class="text-gray-600 text-xs">— pick endpoint first —</p>';$('swapCfgMaxTokens').value='2048';$('swapCfgTemp').value='0.7';$('swapCfgNotes').value='';populateSwapConfigEndpoints();populateSwapConfigPresets()}
+function showSwapConfigModal(){$('swapConfigModal').classList.remove('hidden');$('swapConfigModalTitle').textContent='Add Chain Config';$('swapCfgId').value='';$('swapCfgName').value='';swapCfgSelected=[];$('swapCfgModelList').innerHTML='<p class="text-gray-600 text-xs">— pick endpoint first —</p>';$('swapCfgMaxTokens').value='2048';$('swapCfgTemp').value='0.7';$('swapCfgNotes').value='';populateSwapConfigEndpoints();populateSwapConfigPresets()}
 async function loadSwapCfgModels(){
   const epId=$('swapCfgEndpoint').value,el=$('swapCfgModelList');
   if(!epId){el.innerHTML='<p class="text-gray-600 text-xs">— pick endpoint first —</p>';return}
@@ -125,7 +125,7 @@ function toggleSwapCfgModel(cb){
   if(cb.checked){if(!swapCfgSelected.includes(m))swapCfgSelected.push(m)}
   else swapCfgSelected=swapCfgSelected.filter(x=>x!==m);
 }
-async function editSwapConfig(id){const cfg=allSwapConfigs.find(c=>c.id===id);if(!cfg)return;$('swapConfigModal').classList.remove('hidden');$('swapConfigModalTitle').textContent='Edit Swap Config';$('swapCfgId').value=id;$('swapCfgName').value=cfg.name;$('swapCfgMaxTokens').value=cfg.max_tokens;$('swapCfgTemp').value=cfg.temperature;$('swapCfgNotes').value=cfg.notes||'';populateSwapConfigEndpoints();populateSwapConfigPresets();$('swapCfgEndpoint').value=cfg.endpoint_id;$('swapCfgPreset').value=cfg.preset_key;swapCfgSelected=[...(cfg.models||[])];await loadSwapCfgModels()}
+async function editSwapConfig(id){const cfg=allSwapConfigs.find(c=>c.id===id);if(!cfg)return;$('swapConfigModal').classList.remove('hidden');$('swapConfigModalTitle').textContent='Edit Chain Config';$('swapCfgId').value=id;$('swapCfgName').value=cfg.name;$('swapCfgMaxTokens').value=cfg.max_tokens;$('swapCfgTemp').value=cfg.temperature;$('swapCfgNotes').value=cfg.notes||'';populateSwapConfigEndpoints();populateSwapConfigPresets();$('swapCfgEndpoint').value=cfg.endpoint_id;$('swapCfgPreset').value=cfg.preset_key;swapCfgSelected=[...(cfg.models||[])];await loadSwapCfgModels()}
 async function saveSwapConfig(){const id=$('swapCfgId').value,body={name:$('swapCfgName').value,endpoint_id:$('swapCfgEndpoint').value,models:[...swapCfgSelected],preset_key:$('swapCfgPreset').value,max_tokens:parseInt($('swapCfgMaxTokens').value)||2048,temperature:parseFloat($('swapCfgTemp').value)||0.7,notes:$('swapCfgNotes').value};if(!body.name||!body.endpoint_id||!body.models.length||!body.preset_key){alert('Name, endpoint, preset and at least one model are required.');return}if(id){body.id=id;await api('/api/swap-configs/'+id,{method:'PUT',body:JSON.stringify(body)})}else await api('/api/swap-configs',{method:'POST',body:JSON.stringify(body)});closeModal('swapConfigModal');await loadSwapConfigs()}
 async function removeSwapConfig(id){if(!confirm('Delete config?'))return;await api('/api/swap-configs/'+id,{method:'DELETE'});await loadSwapConfigs()}
 async function loadSwapConfig(id){const cfg=allSwapConfigs.find(c=>c.id===id);if(!cfg)return;$('selEndpoint').value=cfg.endpoint_id;$('selModel').innerHTML='<option value="">— loading… —</option>';await loadModels();$('selModel').value=(cfg.models||[])[0]||'';$('selPreset').value=cfg.preset_key;$('inpMaxTokens').value=cfg.max_tokens;$('inpTemp').value=cfg.temperature;checkReady()}
@@ -136,7 +136,7 @@ function populateSwapConfigPresets(){const sel=$('swapCfgPreset');if(!sel)return
 
 function renderChainConfigList(){
   const el=$('chainConfigList');if(!el)return;
-  if(!allSwapConfigs.length){el.innerHTML='<p class="text-gray-600">No swap configs — create one first</p>';return}
+  if(!allSwapConfigs.length){el.innerHTML='<p class="text-gray-600">No chain configs — create one first</p>';return}
   el.innerHTML=allSwapConfigs.map(cfg=>{
     const checked=chainSelected.has(cfg.id)?'checked':'';
     return`<label class="flex items-center gap-1.5 cursor-pointer hover:text-gray-200"><input type="checkbox" data-cfg-id="${esc(cfg.id)}" ${checked} onchange="toggleChainConfig(this)" class="rounded bg-surface border-surface-400 text-purple-500 focus:ring-purple-500 w-3 h-3"><span class="flex-1 truncate" title="${esc((cfg.models||[]).join(', '))}">${esc(cfg.name)}</span><span class="text-gray-600 shrink-0">×${(cfg.models||[]).length}</span></label>`;
