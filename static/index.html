@@ -37,20 +37,27 @@ canvas[id^="chart"]{width:100%!important;height:220px!important;max-height:220px
     <div id="endpointList" class="space-y-1 max-h-40 overflow-y-auto"></div>
   </div>
 
-  <div class="p-4 border-b border-surface-300">
-    <div class="flex items-center justify-between mb-2">
-      <h2 class="text-xs font-semibold uppercase tracking-wider text-gray-400">Chain Configs</h2>
-      <button onclick="showChainConfigModal()" class="text-cyan-400 hover:text-cyan-300 text-sm font-medium">+ Add</button>
+  <!-- Resizable container for Chain Configs + Presets -->
+  <div id="sidebarResizable" class="flex flex-col min-h-0">
+    <div id="chainConfigsSection" class="p-4 border-b border-surface-300 overflow-hidden">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-xs font-semibold uppercase tracking-wider text-gray-400">Chain Configs</h2>
+        <button onclick="showChainConfigModal()" class="text-cyan-400 hover:text-cyan-300 text-sm font-medium">+ Add</button>
+      </div>
+      <div id="chainConfigList" class="space-y-1 overflow-y-auto"></div>
     </div>
-    <div id="chainConfigList" class="space-y-1 max-h-36 overflow-y-auto"></div>
-  </div>
 
-  <div class="p-4 border-b border-surface-300">
-    <div class="flex items-center justify-between mb-2">
-      <h2 class="text-xs font-semibold uppercase tracking-wider text-gray-400">Presets</h2>
-      <button onclick="showPresetModal()" class="text-cyan-400 hover:text-cyan-300 text-sm font-medium">+ Add</button>
+    <div id="sidebarDivider" class="h-2 cursor-ns-resize flex items-center justify-center shrink-0 select-none hover:bg-cyan-500/20 active:bg-cyan-500/40 transition-colors">
+      <div class="w-8 h-px rounded-full bg-gray-600"></div>
     </div>
-    <div id="presetList" class="space-y-1 max-h-40 overflow-y-auto"></div>
+
+    <div id="presetsSection" class="p-4 border-b border-surface-300 overflow-hidden">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-xs font-semibold uppercase tracking-wider text-gray-400">Presets</h2>
+        <button onclick="showPresetModal()" class="text-cyan-400 hover:text-cyan-300 text-sm font-medium">+ Add</button>
+      </div>
+      <div id="presetList" class="space-y-1 overflow-y-auto"></div>
+    </div>
   </div>
 
 </aside>
@@ -174,6 +181,39 @@ canvas[id^="chart"]{width:100%!important;height:220px!important;max-height:220px
   </div>
 </div>
 
+<script>
+(function(){
+  var container=document.getElementById('sidebarResizable');
+  var divider=document.getElementById('sidebarDivider');
+  var chainSec=document.getElementById('chainConfigsSection');
+  var presetSec=document.getElementById('presetsSection');
+  var dragging=false;
+
+  function onMove(e){
+    if(!dragging)return;
+    var rect=container.getBoundingClientRect();
+    var chainH=Math.max(80,Math.min(e.clientY-rect.top-4,rect.height-160));
+    chainSec.style.flex='none';
+    chainSec.style.height=chainH+'px';
+    presetSec.style.flex='1 1 auto';
+    presetSec.style.overflowY='auto';
+  }
+
+  if(divider){
+    divider.addEventListener('mousedown',function(e){e.preventDefault();dragging=true;});
+    window.addEventListener('mouseup',function(){dragging=false;});
+    window.addEventListener('mousemove',onMove);
+  }
+
+  document.addEventListener('DOMContentLoaded',function(){
+    if(chainSec&&presetSec){
+      chainSec.style.flex='none';
+      chainSec.style.height='140px';
+      presetSec.style.flex='1 1 auto';
+    }
+  });
+})();
+</script>
 <script src="/static/app.js?v=7"></script>
 </body>
 </html>
