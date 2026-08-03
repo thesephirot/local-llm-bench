@@ -40,9 +40,9 @@ canvas[id^="chart"]{width:100%!important;height:220px!important;max-height:220px
   <div class="p-4 border-b border-surface-300">
     <div class="flex items-center justify-between mb-2">
       <h2 class="text-xs font-semibold uppercase tracking-wider text-gray-400">Chain Configs</h2>
-      <button onclick="showSwapConfigModal()" class="text-cyan-400 hover:text-cyan-300 text-sm font-medium">+ Add</button>
+      <button onclick="showChainConfigModal()" class="text-cyan-400 hover:text-cyan-300 text-sm font-medium">+ Add</button>
     </div>
-    <div id="swapConfigList" class="space-y-1 max-h-36 overflow-y-auto"></div>
+    <div id="chainConfigList" class="space-y-1 max-h-36 overflow-y-auto"></div>
   </div>
 
   <div class="p-4 border-b border-surface-300">
@@ -72,7 +72,7 @@ canvas[id^="chart"]{width:100%!important;height:220px!important;max-height:220px
     <div class="flex flex-wrap gap-3 items-end mt-3 pt-3 border-t border-surface-300">
       <div class="flex-1 min-w-[200px]">
         <label class="block text-xs text-gray-400 mb-1">Chain LLMs</label>
-        <div id="chainConfigList" class="bg-surface border border-surface-400 rounded-lg px-3 py-1.5 max-h-28 overflow-y-auto text-xs space-y-0.5">
+        <div id="chainRunConfigList" class="bg-surface border border-surface-400 rounded-lg px-3 py-1.5 max-h-28 overflow-y-auto text-xs space-y-0.5">
           <p class="text-gray-600">No chain configs — create one first</p>
         </div>
       </div>
@@ -136,25 +136,25 @@ canvas[id^="chart"]{width:100%!important;height:220px!important;max-height:220px
 </div>
 
 <!-- Chain config modal -->
-<div id="swapConfigModal" class="hidden fixed inset-0 bg-black/60 z-50 flex items-center justify-center">
+<div id="chainConfigModal" class="hidden fixed inset-0 bg-black/60 z-50 flex items-center justify-center">
   <div class="bg-surface-200 border border-surface-400 rounded-xl w-full max-w-lg p-6 fade-in">
-    <h3 id="swapConfigModalTitle" class="text-lg font-semibold mb-4">Save Chain Config</h3><input type="hidden" id="swapCfgId">
+    <h3 id="chainConfigModalTitle" class="text-lg font-semibold mb-4">Save Chain Config</h3><input type="hidden" id="chainCfgId">
     <div class="space-y-3">
-      <div><label class="block text-xs text-gray-400 mb-1">Config Name</label><input id="swapCfgName" class="w-full bg-surface border border-surface-400 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500" placeholder="My Config"></div>
+      <div><label class="block text-xs text-gray-400 mb-1">Config Name</label><input id="chainCfgName" class="w-full bg-surface border border-surface-400 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500" placeholder="My Config"></div>
       <div class="grid grid-cols-2 gap-3">
-        <div><label class="block text-xs text-gray-400 mb-1">Endpoint</label><select id="swapCfgEndpoint" onchange="loadSwapCfgModels()" class="w-full bg-surface border border-surface-400 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"></select></div>
-        <div><label class="block text-xs text-gray-400 mb-1">Models <span class="text-gray-600">(run in check order)</span></label><div id="swapCfgModelList" class="w-full bg-surface border border-surface-400 rounded-lg px-3 py-1.5 text-sm max-h-32 overflow-y-auto space-y-0.5 focus:outline-none focus:ring-2 focus:ring-cyan-500"><p class="text-gray-600 text-xs">— pick endpoint first —</p></div></div>
+        <div><label class="block text-xs text-gray-400 mb-1">Endpoint</label><select id="chainCfgEndpoint" onchange="loadChainCfgModels()" class="w-full bg-surface border border-surface-400 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"></select></div>
+        <div><label class="block text-xs text-gray-400 mb-1">Models <span class="text-gray-600">(run in check order)</span></label><div id="chainCfgModelList" class="w-full bg-surface border border-surface-400 rounded-lg px-3 py-1.5 text-sm max-h-32 overflow-y-auto space-y-0.5 focus:outline-none focus:ring-2 focus:ring-cyan-500"><p class="text-gray-600 text-xs">— pick endpoint first —</p></div></div>
       </div>
       <div class="grid grid-cols-3 gap-3">
-        <div><label class="block text-xs text-gray-400 mb-1">Preset</label><select id="swapCfgPreset" class="w-full bg-surface border border-surface-400 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"></select></div>
-        <div><label class="block text-xs text-gray-400 mb-1">Max Tokens</label><input id="swapCfgMaxTokens" type="number" value="2048" class="w-full bg-surface border border-surface-400 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"></div>
-        <div><label class="block text-xs text-gray-400 mb-1">Temp</label><input id="swapCfgTemp" type="number" value="0.7" step="0.1" class="w-full bg-surface border border-surface-400 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"></div>
+        <div><label class="block text-xs text-gray-400 mb-1">Preset</label><select id="chainCfgPreset" class="w-full bg-surface border border-surface-400 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"></select></div>
+        <div><label class="block text-xs text-gray-400 mb-1">Max Tokens</label><input id="chainCfgMaxTokens" type="number" value="2048" class="w-full bg-surface border border-surface-400 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"></div>
+        <div><label class="block text-xs text-gray-400 mb-1">Temp</label><input id="chainCfgTemp" type="number" value="0.7" step="0.1" class="w-full bg-surface border border-surface-400 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"></div>
       </div>
-      <div><label class="block text-xs text-gray-400 mb-1">Notes</label><input id="swapCfgNotes" class="w-full bg-surface border border-surface-400 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500" placeholder="Optional notes..."></div>
+      <div><label class="block text-xs text-gray-400 mb-1">Notes</label><input id="chainCfgNotes" class="w-full bg-surface border border-surface-400 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500" placeholder="Optional notes..."></div>
     </div>
     <div class="flex justify-end gap-2 mt-5">
-      <button onclick="closeModal('swapConfigModal')" class="px-4 py-2 text-sm text-gray-400 hover:text-gray-200 rounded-lg">Cancel</button>
-      <button onclick="saveSwapConfig()" class="px-4 py-2 text-sm bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg font-medium">Save</button>
+      <button onclick="closeModal('chainConfigModal')" class="px-4 py-2 text-sm text-gray-400 hover:text-gray-200 rounded-lg">Cancel</button>
+      <button onclick="saveChainConfig()" class="px-4 py-2 text-sm bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg font-medium">Save</button>
     </div>
   </div>
 </div>

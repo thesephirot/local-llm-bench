@@ -16,7 +16,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app import database as db
-from app.models import BenchmarkResult, EndpointConfig, LlamaSwapConfig
+from app.models import BenchmarkResult, EndpointConfig, ChainConfig
 
 
 class _LLMHandler(BaseHTTPRequestHandler):
@@ -74,12 +74,12 @@ def llm_server():
 
 @pytest.fixture
 def wired_config(client, llm_server):
-    """Create an endpoint + swap config pointing at the fake LLM server."""
+    """Create an endpoint + chain config pointing at the fake LLM server."""
     ep = EndpointConfig(name="Fake", base_url=llm_server)
     db.save_endpoint(ep)
-    cfg = LlamaSwapConfig(name="FakeCfg", endpoint_id=ep.id, endpoint_name=ep.name,
+    cfg = ChainConfig(name="FakeCfg", endpoint_id=ep.id, endpoint_name=ep.name,
                           models=["fake-model"], preset_key="simple")
-    db.save_swap_config(cfg)
+    db.save_chain_config(cfg)
     return ep, cfg
 
 
@@ -120,9 +120,9 @@ def test_chain_network_error_real_path(client, _db_path):
     """Connection refused must classify as a network error via the real path."""
     ep = EndpointConfig(name="Down", base_url="http://127.0.0.1:1")
     db.save_endpoint(ep)
-    cfg = LlamaSwapConfig(name="DownCfg", endpoint_id=ep.id, endpoint_name=ep.name,
+    cfg = ChainConfig(name="DownCfg", endpoint_id=ep.id, endpoint_name=ep.name,
                           models=["m"], preset_key="simple")
-    db.save_swap_config(cfg)
+    db.save_chain_config(cfg)
 
     r = client.post("/api/run-chain", json={"config_ids": [cfg.id]})
     assert r.status_code == 200

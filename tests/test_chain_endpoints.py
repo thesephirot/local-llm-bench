@@ -77,17 +77,17 @@ def test_run_chain_nonexistent_config(client):
 
 def test_error_classification_http_status(client):
     """Mock _run_single_benchmark to raise HTTPStatusError → verify error_category."""
-    # Create a real swap config so the chain doesn't fail at lookup
+    # Create a real chain config so the chain doesn't fail at lookup
     from app import database as db
     ep_id = "test-ep-" + __import__("uuid").uuid4().hex[:8]
     cfg_id = "test-cfg-" + __import__("uuid").uuid4().hex[:8]
 
     ep = db.EndpointConfig(id=ep_id, name="Test", base_url="http://localhost:9999", api_key="x")
     db.save_endpoint(ep)
-    from app.models import LlamaSwapConfig
-    cfg = LlamaSwapConfig(id=cfg_id, name="TestCfg", endpoint_id=ep_id, endpoint_name="Test",
+    from app.models import ChainConfig
+    cfg = ChainConfig(id=cfg_id, name="TestCfg", endpoint_id=ep_id, endpoint_name="Test",
                           models=["test-model"], preset_key="simple")
-    db.save_swap_config(cfg)
+    db.save_chain_config(cfg)
 
     mock_resp = MagicMock()
     mock_resp.status_code = 429
@@ -105,7 +105,7 @@ def test_error_classification_http_status(client):
         assert step["status_code"] == 429
 
     # Cleanup
-    db.delete_swap_config(cfg_id)
+    db.delete_chain_config(cfg_id)
     db.delete_endpoint(ep_id)
 
 
@@ -117,10 +117,10 @@ def test_error_classification_timeout(client):
 
     ep = db.EndpointConfig(id=ep_id, name="Test", base_url="http://localhost:9999", api_key="x")
     db.save_endpoint(ep)
-    from app.models import LlamaSwapConfig
-    cfg = LlamaSwapConfig(id=cfg_id, name="TestCfg", endpoint_id=ep_id, endpoint_name="Test",
+    from app.models import ChainConfig
+    cfg = ChainConfig(id=cfg_id, name="TestCfg", endpoint_id=ep_id, endpoint_name="Test",
                           models=["test-model"], preset_key="simple")
-    db.save_swap_config(cfg)
+    db.save_chain_config(cfg)
 
     with patch("app.main._run_single_benchmark", new_callable=AsyncMock) as mock:
         mock.side_effect = httpx.TimeoutException("timed out")
@@ -131,7 +131,7 @@ def test_error_classification_timeout(client):
         assert not step["success"]
         assert step["error_category"] == ErrorCategory.TIMEOUT.value
 
-    db.delete_swap_config(cfg_id)
+    db.delete_chain_config(cfg_id)
     db.delete_endpoint(ep_id)
 
 
@@ -143,10 +143,10 @@ def test_error_classification_network(client):
 
     ep = db.EndpointConfig(id=ep_id, name="Test", base_url="http://localhost:9999", api_key="x")
     db.save_endpoint(ep)
-    from app.models import LlamaSwapConfig
-    cfg = LlamaSwapConfig(id=cfg_id, name="TestCfg", endpoint_id=ep_id, endpoint_name="Test",
+    from app.models import ChainConfig
+    cfg = ChainConfig(id=cfg_id, name="TestCfg", endpoint_id=ep_id, endpoint_name="Test",
                           models=["test-model"], preset_key="simple")
-    db.save_swap_config(cfg)
+    db.save_chain_config(cfg)
 
     with patch("app.main._run_single_benchmark", new_callable=AsyncMock) as mock:
         mock.side_effect = httpx.ConnectError("connection refused")
@@ -157,7 +157,7 @@ def test_error_classification_network(client):
         assert not step["success"]
         assert step["error_category"] == ErrorCategory.NETWORK.value
 
-    db.delete_swap_config(cfg_id)
+    db.delete_chain_config(cfg_id)
     db.delete_endpoint(ep_id)
 
 
@@ -234,15 +234,15 @@ def test_immediate_cancel_aborts_inflight_step(client):
     import threading
     import time
     from app import database as db
-    from app.models import LlamaSwapConfig
+    from app.models import ChainConfig
 
     ep_id = "test-ep-" + __import__("uuid").uuid4().hex[:8]
     cfg_id = "test-cfg-" + __import__("uuid").uuid4().hex[:8]
     ep = db.EndpointConfig(id=ep_id, name="Test", base_url="http://localhost:9999", api_key="x")
     db.save_endpoint(ep)
-    cfg = LlamaSwapConfig(id=cfg_id, name="TestCfg", endpoint_id=ep_id, endpoint_name="Test",
+    cfg = ChainConfig(id=cfg_id, name="TestCfg", endpoint_id=ep_id, endpoint_name="Test",
                           models=["model-a", "model-b"], preset_key="simple")
-    db.save_swap_config(cfg)
+    db.save_chain_config(cfg)
 
     async def hang_forever(*args, **kwargs):
         # Simulates a stuck LLM server: the stream never delivers bytes.
@@ -287,7 +287,7 @@ def test_immediate_cancel_aborts_inflight_step(client):
         # Chain must be finalized — no longer reported as running/unfinished.
         assert client.get("/api/chain-status").json() == []
 
-    db.delete_swap_config(cfg_id)
+    db.delete_chain_config(cfg_id)
     db.delete_endpoint(ep_id)
 
 

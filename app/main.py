@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
-from .models import EndpointConfig, PromptPreset, LlamaSwapConfig, BenchmarkResult, ChainRunRequest, ChainStepResult, ChainRunResult, ErrorCategory
+from .models import EndpointConfig, PromptPreset, ChainConfig, BenchmarkResult, ChainRunRequest, ChainStepResult, ChainRunResult, ErrorCategory
 from . import database as db
 
 _db_sync = db._db_sync  # re-export for use in SSE generator
@@ -80,7 +80,7 @@ class PresetUpdate(BaseModel):
     description: str = ""
 
 
-class SwapConfigCreate(BaseModel):
+class ChainConfigCreate(BaseModel):
     name: str
     endpoint_id: str
     models: list[str] = []
@@ -90,7 +90,7 @@ class SwapConfigCreate(BaseModel):
     notes: str = ""
 
 
-class SwapConfigUpdate(BaseModel):
+class ChainConfigUpdate(BaseModel):
     id: str
     name: str
     endpoint_id: str
@@ -145,7 +145,7 @@ async def _execute_chain(config_ids: list[str]):
     # config's settings.
     steps: list[ChainStepResult] = []
     for cfg_id in config_ids:
-        cfg = await _db_sync(db.get_swap_config, cfg_id)
+        cfg = await _db_sync(db.get_chain_config, cfg_id)
         if not cfg:
             steps.append(ChainStepResult(step_index=len(steps), config_id=cfg_id,
                                          error=f"Config {cfg_id} not found", success=False,
@@ -204,7 +204,7 @@ async def _execute_chain(config_ids: list[str]):
         yield ("step_start", {"step_index": step.step_index, "config_id": step.config_id,
                               "config_name": step.config_name, "model": step.model,
                               "total_steps": len(steps)})
-        cfg = await _db_sync(db.get_swap_config, step.config_id)
+        cfg = await _db_sync(db.get_chain_config, step.config_id)
         if not cfg or not cfg.endpoint_id:
             step.error = step.error or f"Config {step.config_id} not found"
             step.success = False
@@ -603,15 +603,15 @@ async def get_models(endpoint_id: str):
             raise HTTPException(502, f"Failed to reach endpoint: {e}")
 
 
-# ── Swap Configs ────────────────────────────────────────────
+# ── Chain Configs ───────────────────────────────────────────
 
-@app.get("/api/swap-configs")
-async def get_swap_configs():
-    return db.list_swap_configs()
+@app.get("/api/chain-configs")
+async def get_chain_configs():
+    return db.list_chain_configs()
 
 
-@app.post("/api/swap-configs")
-async def create_swap_config(data: SwapConfigCreate):
+@app.post("/api/chain-configs")
+async def create_chain_config(data: ChainConfigCreate):
     ep = db.get_endpoint(data.endpoint_id)
     if not ep:
         raise HTTPException(404, "Endpoint not found")
@@ -619,7 +619,7 @@ async def create_swap_config(data: SwapConfigCreate):
         raise HTTPException(400, "Config must contain at least one model")
     presets = db.presets_as_dict()
     preset = presets.get(data.preset_key, {})
-    cfg = LlamaSwapConfig(
+    cfg = ChainConfig(
         name=data.name,
         endpoint_id=data.endpoint_id,
         endpoint_name=ep.name,
@@ -631,17 +631,17 @@ async def create_swap_config(data: SwapConfigCreate):
         notes=data.notes,
         created_at=datetime.datetime.now().isoformat(),
     )
-    return db.save_swap_config(cfg)
+    return db.save_chain_config(cfg)
 
 
-@app.put("/api/swap-configs/{cfg_id}")
-async def update_swap_config(cfg_id: str, data: SwapConfigUpdate):
+@app.put("/api/chain-configs/{cfg_id}")
+async def update_chain_config(cfg_id: str, data: ChainConfigUpdate):
     ep = db.get_endpoint(data.endpoint_id)
     if not data.models:
         raise HTTPException(400, "Config must contain at least one model")
     presets = db.presets_as_dict()
     preset = presets.get(data.preset_key, {})
-    cfg = LlamaSwapConfig(
+    cfg = ChainConfig(
         id=data.id,
         name=data.name,
         endpoint_id=data.endpoint_id,
@@ -654,12 +654,12 @@ async def update_swap_config(cfg_id: str, data: SwapConfigUpdate):
         notes=data.notes,
         created_at=datetime.datetime.now().isoformat(),
     )
-    return db.save_swap_config(cfg)
+    return db.save_chain_config(cfg)
 
 
-@app.delete("/api/swap-configs/{cfg_id}")
-async def delete_swap_config(cfg_id: str):
-    db.delete_swap_config(cfg_id)
+@app.delete("/api/chain-configs/{cfg_id}")
+async def delete_chain_config(cfg_id: str):
+    db.delete_chain_config(cfg_id)
     return {"ok": True}
 
 

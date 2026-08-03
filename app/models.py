@@ -27,7 +27,7 @@ class PromptPreset:
 
 
 @dataclass
-class LlamaSwapConfig:
+class ChainConfig:
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     name: str = ""
     endpoint_id: str = ""

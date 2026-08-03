@@ -1,5 +1,5 @@
 // LLM Benchmark Dashboard
-let presets={},running=false,sortCol='created_at',sortDir='desc',allResults=[],chartInstances={},allSwapConfigs=[],compareSelected=[],chainSelected=new Set(),swapCfgSelected=[];
+let presets={},running=false,sortCol='created_at',sortDir='desc',allResults=[],chartInstances={},allChainConfigs=[],compareSelected=[],chainSelected=new Set(),chainCfgSelected=[];
 const $=s=>document.getElementById(s);
 const esc=s=>{const d=document.createElement('div');d.textContent=s;return d.innerHTML};
 const fmt=d=>d?new Date(d).toLocaleString():'—';
@@ -9,7 +9,7 @@ const fmtNum=v=>v!=null&&v!==''?Number(v).toLocaleString():'—';
 const fmtDec=(v,d=1)=>v!=null?v.toFixed(d):'—';
 const api=(p,o={})=>fetch(p,{headers:{'Content-Type':'application/json'},...o}).then(async r=>{if(!r.ok)throw new Error(r.status+': '+await r.text());return r.json()});
 
-(async()=>{await loadPresets();await loadEndpoints();await loadSwapConfigs();checkReady();switchTab('dashboard');})();
+(async()=>{await loadPresets();await loadEndpoints();await loadChainConfigs();checkReady();switchTab('dashboard');})();
 
 // Live chain status bar — polls the backend so progress is visible even
 // after a page reload mid-chain (execution is server-side).
@@ -63,7 +63,7 @@ async function loadPresets(){
     btn.onclick=()=>selectPreset(k);list.appendChild(btn);
     const opt=document.createElement('option');opt.value=k;opt.textContent=p.name;sel.appendChild(opt);
   }
-  sel.onchange=()=>selectPreset(sel.value);populateSwapConfigPresets();
+  sel.onchange=()=>selectPreset(sel.value);populateChainConfigPresets();
 }
 function selectPreset(key){
   Object.keys(presets).forEach(k=>{const b=document.querySelector(`.preset-btn[data-key="${k}"]`);if(b){b.classList.toggle('bg-surface-300',k===key);b.classList.toggle('ring-1',k===key);b.classList.toggle('ring-cyan-500',k===key)}});
@@ -82,7 +82,7 @@ async function loadEndpoints(){
     div.innerHTML=`<span class="flex-1 truncate" onclick="selEndpoint('${ep.id}')">${esc(ep.name)}</span><button onclick="editEndpoint('${ep.id}')" class="hidden group-hover:inline text-gray-500 hover:text-gray-300 text-xs">✏️</button><button onclick="removeEndpoint('${ep.id}')" class="hidden group-hover:inline text-red-500 hover:text-red-400 text-xs">🗑️</button>`;
     list.appendChild(div);const opt=document.createElement('option');opt.value=ep.id;opt.textContent=ep.name;sel.appendChild(opt);
   }
-  populateSwapConfigEndpoints();checkReady();
+  populateChainConfigEndpoints();checkReady();
 }
 function selEndpoint(id){$('selEndpoint').value=id;onEndpointChange()}
 function onEndpointChange(){$('selModel').innerHTML='<option value="">— model —</option>';loadModels();checkReady()}
@@ -94,19 +94,19 @@ async function loadModels(){const epId=$('selEndpoint').value,sel=$('selModel');
 function checkReady(){const ep=$('selEndpoint')?.value||'',md=$('selModel')?.value||'',ps=$('selPreset')?.value||'',btn=$('btnRun');if(btn)btn.disabled=!(ep&&md&&ps)||running}
 
 // Chain Configs
-async function loadSwapConfigs(){
-  allSwapConfigs=await api('/api/swap-configs');const list=$('swapConfigList');list.innerHTML='';
-  if(!allSwapConfigs.length){list.innerHTML='<p class="text-[10px] text-gray-600 px-3">No configs</p>';renderChainConfigList();return}
-  for(const cfg of allSwapConfigs){
+async function loadChainConfigs(){
+  allChainConfigs=await api('/api/chain-configs');const list=$('chainConfigList');list.innerHTML='';
+  if(!allChainConfigs.length){list.innerHTML='<p class="text-[10px] text-gray-600 px-3">No configs</p>';renderChainConfigList();return}
+  for(const cfg of allChainConfigs){
     const div=document.createElement('div');div.className='group flex items-center gap-2 px-2 py-1 rounded text-xs hover:bg-surface-300 cursor-pointer';
-    div.innerHTML=`<span class="flex-1 truncate" onclick="loadSwapConfig('${cfg.id}')" title="${esc((cfg.models||[]).join(', '))}">${esc(cfg.name)}</span><span class="text-[9px] text-gray-600 truncate max-w-[80px]">×${(cfg.models||[]).length}</span><button onclick="editSwapConfig('${cfg.id}')" class="hidden group-hover:inline text-gray-500 hover:text-gray-300 text-[10px]">✏️</button><button onclick="removeSwapConfig('${cfg.id}')" class="hidden group-hover:inline text-red-500 hover:text-red-400 text-[10px]">✕</button>`;
+    div.innerHTML=`<span class="flex-1 truncate" onclick="loadChainConfig('${cfg.id}')" title="${esc((cfg.models||[]).join(', '))}">${esc(cfg.name)}</span><span class="text-[9px] text-gray-600 truncate max-w-[80px]">×${(cfg.models||[]).length}</span><button onclick="editChainConfig('${cfg.id}')" class="hidden group-hover:inline text-gray-500 hover:text-gray-300 text-[10px]">✏️</button><button onclick="removeChainConfig('${cfg.id}')" class="hidden group-hover:inline text-red-500 hover:text-red-400 text-[10px]">✕</button>`;
     list.appendChild(div);
   }
   renderChainConfigList();
 }
-function showSwapConfigModal(){$('swapConfigModal').classList.remove('hidden');$('swapConfigModalTitle').textContent='Add Chain Config';$('swapCfgId').value='';$('swapCfgName').value='';swapCfgSelected=[];$('swapCfgModelList').innerHTML='<p class="text-gray-600 text-xs">— pick endpoint first —</p>';$('swapCfgMaxTokens').value='2048';$('swapCfgTemp').value='0.7';$('swapCfgNotes').value='';populateSwapConfigEndpoints();populateSwapConfigPresets()}
-async function loadSwapCfgModels(){
-  const epId=$('swapCfgEndpoint').value,el=$('swapCfgModelList');
+function showChainConfigModal(){$('chainConfigModal').classList.remove('hidden');$('chainConfigModalTitle').textContent='Add Chain Config';$('chainCfgId').value='';$('chainCfgName').value='';chainCfgSelected=[];$('chainCfgModelList').innerHTML='<p class="text-gray-600 text-xs">— pick endpoint first —</p>';$('chainCfgMaxTokens').value='2048';$('chainCfgTemp').value='0.7';$('chainCfgNotes').value='';populateChainConfigEndpoints();populateChainConfigPresets()}
+async function loadChainCfgModels(){
+  const epId=$('chainCfgEndpoint').value,el=$('chainCfgModelList');
   if(!epId){el.innerHTML='<p class="text-gray-600 text-xs">— pick endpoint first —</p>';return}
   el.innerHTML='<p class="text-gray-600 text-xs">— loading… —</p>';
   let models=[];
@@ -114,30 +114,30 @@ async function loadSwapCfgModels(){
   catch(e){el.innerHTML=`<p class="text-red-400 text-xs">⚠ ${esc(e.message)}</p>`;return}
   // keep saved models the endpoint no longer lists, so they stay editable
   const ids=models.map(m=>m.id);
-  swapCfgSelected.filter(m=>!ids.includes(m)).forEach(m=>models.push({id:m}));
+  chainCfgSelected.filter(m=>!ids.includes(m)).forEach(m=>models.push({id:m}));
   el.innerHTML=models.map(m=>{
-    const checked=swapCfgSelected.includes(m.id)?'checked':'';
-    return`<label class="flex items-center gap-1.5 cursor-pointer hover:text-gray-200 text-xs"><input type="checkbox" data-model="${esc(m.id)}" ${checked} onchange="toggleSwapCfgModel(this)" class="rounded bg-surface border-surface-400 text-cyan-500 focus:ring-cyan-500 w-3 h-3"><span class="flex-1 truncate">${esc(m.id)}</span></label>`;
+    const checked=chainCfgSelected.includes(m.id)?'checked':'';
+    return`<label class="flex items-center gap-1.5 cursor-pointer hover:text-gray-200 text-xs"><input type="checkbox" data-model="${esc(m.id)}" ${checked} onchange="toggleChainCfgModel(this)" class="rounded bg-surface border-surface-400 text-cyan-500 focus:ring-cyan-500 w-3 h-3"><span class="flex-1 truncate">${esc(m.id)}</span></label>`;
   }).join('')||'<p class="text-gray-600 text-xs">— no models on this endpoint —</p>';
 }
-function toggleSwapCfgModel(cb){
+function toggleChainCfgModel(cb){
   const m=cb.dataset.model;
-  if(cb.checked){if(!swapCfgSelected.includes(m))swapCfgSelected.push(m)}
-  else swapCfgSelected=swapCfgSelected.filter(x=>x!==m);
+  if(cb.checked){if(!chainCfgSelected.includes(m))chainCfgSelected.push(m)}
+  else chainCfgSelected=chainCfgSelected.filter(x=>x!==m);
 }
-async function editSwapConfig(id){const cfg=allSwapConfigs.find(c=>c.id===id);if(!cfg)return;$('swapConfigModal').classList.remove('hidden');$('swapConfigModalTitle').textContent='Edit Chain Config';$('swapCfgId').value=id;$('swapCfgName').value=cfg.name;$('swapCfgMaxTokens').value=cfg.max_tokens;$('swapCfgTemp').value=cfg.temperature;$('swapCfgNotes').value=cfg.notes||'';populateSwapConfigEndpoints();populateSwapConfigPresets();$('swapCfgEndpoint').value=cfg.endpoint_id;$('swapCfgPreset').value=cfg.preset_key;swapCfgSelected=[...(cfg.models||[])];await loadSwapCfgModels()}
-async function saveSwapConfig(){const id=$('swapCfgId').value,body={name:$('swapCfgName').value,endpoint_id:$('swapCfgEndpoint').value,models:[...swapCfgSelected],preset_key:$('swapCfgPreset').value,max_tokens:parseInt($('swapCfgMaxTokens').value)||2048,temperature:parseFloat($('swapCfgTemp').value)||0.7,notes:$('swapCfgNotes').value};if(!body.name||!body.endpoint_id||!body.models.length||!body.preset_key){alert('Name, endpoint, preset and at least one model are required.');return}if(id){body.id=id;await api('/api/swap-configs/'+id,{method:'PUT',body:JSON.stringify(body)})}else await api('/api/swap-configs',{method:'POST',body:JSON.stringify(body)});closeModal('swapConfigModal');await loadSwapConfigs()}
-async function removeSwapConfig(id){if(!confirm('Delete config?'))return;await api('/api/swap-configs/'+id,{method:'DELETE'});await loadSwapConfigs()}
-async function loadSwapConfig(id){const cfg=allSwapConfigs.find(c=>c.id===id);if(!cfg)return;$('selEndpoint').value=cfg.endpoint_id;$('selModel').innerHTML='<option value="">— loading… —</option>';await loadModels();$('selModel').value=(cfg.models||[])[0]||'';$('selPreset').value=cfg.preset_key;$('inpMaxTokens').value=cfg.max_tokens;$('inpTemp').value=cfg.temperature;checkReady()}
-function populateSwapConfigEndpoints(){const sel=$('swapCfgEndpoint');if(!sel)return;sel.innerHTML='<option value="">— endpoint —</option>';document.querySelectorAll('#selEndpoint option').forEach(o=>{if(o.value){const opt=document.createElement('option');opt.value=o.value;opt.textContent=o.textContent;sel.appendChild(opt)}})}
-function populateSwapConfigPresets(){const sel=$('swapCfgPreset');if(!sel)return;sel.innerHTML='<option value="">— preset —</option>';for(const[k,p]of Object.entries(presets)){const opt=document.createElement('option');opt.value=k;opt.textContent=p.name;sel.appendChild(opt)}}
+async function editChainConfig(id){const cfg=allChainConfigs.find(c=>c.id===id);if(!cfg)return;$('chainConfigModal').classList.remove('hidden');$('chainConfigModalTitle').textContent='Edit Chain Config';$('chainCfgId').value=id;$('chainCfgName').value=cfg.name;$('chainCfgMaxTokens').value=cfg.max_tokens;$('chainCfgTemp').value=cfg.temperature;$('chainCfgNotes').value=cfg.notes||'';populateChainConfigEndpoints();populateChainConfigPresets();$('chainCfgEndpoint').value=cfg.endpoint_id;$('chainCfgPreset').value=cfg.preset_key;chainCfgSelected=[...(cfg.models||[])];await loadChainCfgModels()}
+async function saveChainConfig(){const id=$('chainCfgId').value,body={name:$('chainCfgName').value,endpoint_id:$('chainCfgEndpoint').value,models:[...chainCfgSelected],preset_key:$('chainCfgPreset').value,max_tokens:parseInt($('chainCfgMaxTokens').value)||2048,temperature:parseFloat($('chainCfgTemp').value)||0.7,notes:$('chainCfgNotes').value};if(!body.name||!body.endpoint_id||!body.models.length||!body.preset_key){alert('Name, endpoint, preset and at least one model are required.');return}if(id){body.id=id;await api('/api/chain-configs/'+id,{method:'PUT',body:JSON.stringify(body)})}else await api('/api/chain-configs',{method:'POST',body:JSON.stringify(body)});closeModal('chainConfigModal');await loadChainConfigs()}
+async function removeChainConfig(id){if(!confirm('Delete config?'))return;await api('/api/chain-configs/'+id,{method:'DELETE'});await loadChainConfigs()}
+async function loadChainConfig(id){const cfg=allChainConfigs.find(c=>c.id===id);if(!cfg)return;$('selEndpoint').value=cfg.endpoint_id;$('selModel').innerHTML='<option value="">— loading… —</option>';await loadModels();$('selModel').value=(cfg.models||[])[0]||'';$('selPreset').value=cfg.preset_key;$('inpMaxTokens').value=cfg.max_tokens;$('inpTemp').value=cfg.temperature;checkReady()}
+function populateChainConfigEndpoints(){const sel=$('chainCfgEndpoint');if(!sel)return;sel.innerHTML='<option value="">— endpoint —</option>';document.querySelectorAll('#selEndpoint option').forEach(o=>{if(o.value){const opt=document.createElement('option');opt.value=o.value;opt.textContent=o.textContent;sel.appendChild(opt)}})}
+function populateChainConfigPresets(){const sel=$('chainCfgPreset');if(!sel)return;sel.innerHTML='<option value="">— preset —</option>';for(const[k,p]of Object.entries(presets)){const opt=document.createElement('option');opt.value=k;opt.textContent=p.name;sel.appendChild(opt)}}
 
 // ── Chain Benchmark UI ──────────────────────────────────────
 
 function renderChainConfigList(){
-  const el=$('chainConfigList');if(!el)return;
-  if(!allSwapConfigs.length){el.innerHTML='<p class="text-gray-600">No chain configs — create one first</p>';return}
-  el.innerHTML=allSwapConfigs.map(cfg=>{
+  const el=$('chainRunConfigList');if(!el)return;
+  if(!allChainConfigs.length){el.innerHTML='<p class="text-gray-600">No chain configs — create one first</p>';return}
+  el.innerHTML=allChainConfigs.map(cfg=>{
     const checked=chainSelected.has(cfg.id)?'checked':'';
     return`<label class="flex items-center gap-1.5 cursor-pointer hover:text-gray-200"><input type="checkbox" data-cfg-id="${esc(cfg.id)}" ${checked} onchange="toggleChainConfig(this)" class="rounded bg-surface border-surface-400 text-purple-500 focus:ring-purple-500 w-3 h-3"><span class="flex-1 truncate" title="${esc((cfg.models||[]).join(', '))}">${esc(cfg.name)}</span><span class="text-gray-600 shrink-0">×${(cfg.models||[]).length}</span></label>`;
   }).join('');
@@ -156,8 +156,8 @@ async function runChainBenchmarkStream(){
   if(running||chainSelected.size===0)return;
   running=true;updateRunChainButton();
   // Drop configs that were deleted since the page loaded
-  try{await loadSwapConfigs()}catch(e){}
-  const valid=new Set(allSwapConfigs.map(c=>c.id));
+  try{await loadChainConfigs()}catch(e){}
+  const valid=new Set(allChainConfigs.map(c=>c.id));
   chainSelected.forEach(id=>{if(!valid.has(id))chainSelected.delete(id)});
   if(chainSelected.size===0){running=false;updateRunChainButton();switchTab('dashboard');$('panel-dashboard').innerHTML='<div class="text-center py-24 text-gray-400"><p>No valid configs selected — they may have been deleted.</p></div>';return}
   switchTab('dashboard');
