@@ -132,7 +132,11 @@ canvas[id^="chart"]{width:100%!important;height:220px!important;max-height:220px
         <div><label class="block text-xs text-gray-400 mb-1">Key (slug)</label><input id="presetKey" class="w-full bg-surface border border-surface-400 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500" placeholder="my-preset"></div>
         <div><label class="block text-xs text-gray-400 mb-1">Name</label><input id="presetName" class="w-full bg-surface border border-surface-400 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500" placeholder="My Preset"></div>
       </div>
-      <div><label class="block text-xs text-gray-400 mb-1">Prompt</label><textarea id="presetPrompt" rows="4" class="w-full bg-surface border border-surface-400 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500" placeholder="Enter prompt text..."></textarea></div>
+      <div>
+        <label class="block text-xs text-gray-400 mb-1">Prompt Steps</label>
+        <div id="presetStepsList" class="space-y-2"></div>
+        <button type="button" onclick="addPresetStep()" class="mt-2 text-xs text-cyan-400 hover:text-cyan-300">+ Add step</button>
+      </div>
       <div><label class="block text-xs text-gray-400 mb-1">Description</label><input id="presetDesc" class="w-full bg-surface border border-surface-400 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500" placeholder="What this preset tests"></div>
     </div>
     <div class="flex justify-end gap-2 mt-5">
@@ -175,6 +179,7 @@ canvas[id^="chart"]{width:100%!important;height:220px!important;max-height:220px
     </div>
     <div class="p-4 overflow-y-auto">
       <div id="detailStats" class="grid grid-cols-5 gap-3 mb-4"></div>
+      <div id="detailSteps" class="hidden space-y-3 mb-3"></div>
       <div class="bg-surface rounded-lg p-3 mb-3"><h4 class="text-xs font-semibold text-gray-400 uppercase mb-1">Prompt</h4><p id="detailPrompt" class="text-sm text-gray-300 whitespace-pre-wrap"></p></div>
       <div class="bg-surface rounded-lg p-3"><h4 class="text-xs font-semibold text-gray-400 uppercase mb-1">Response</h4><div id="detailResponse" class="text-sm text-gray-200 whitespace-pre-wrap leading-relaxed"></div></div>
     </div>

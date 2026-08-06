@@ -68,16 +68,18 @@ class ModelItem(BaseModel):
 class PresetCreate(BaseModel):
     key: str
     name: str
-    prompt: str
+    prompt: str = ""
     description: str = ""
+    steps: list[str] = []
 
 
 class PresetUpdate(BaseModel):
     id: str
     key: str
     name: str
-    prompt: str
+    prompt: str = ""
     description: str = ""
+    steps: list[str] = []
 
 
 class ChainConfigCreate(BaseModel):
@@ -225,7 +227,7 @@ async def _execute_chain(config_ids: list[str]):
                     endpoint=ep,
                     model=step.model,
                     preset_name=preset.get("name", preset_name),
-                    preset_prompt=preset.get("prompt", "Hello, how are you today?"),
+                    preset_steps=preset.get("steps") or [preset.get("prompt", "Hello, how are you today?")],
                     max_tokens=cfg.max_tokens,
                     temperature=cfg.temperature,
                 ))
@@ -362,14 +364,23 @@ async def _run_single_benchmark(
     endpoint: EndpointConfig,
     model: str,
     preset_name: str,
-    preset_prompt: str,
+    preset_steps: list[str] | None = None,
+    preset_prompt: str | None = None,
     max_tokens: int = 2048,
     temperature: float = 0.7,
 ) -> BenchmarkResult:
-    """Run a single streaming benchmark and return the result.
+    """Run a streaming benchmark (one or more prompt steps) and return the result.
+
+    Steps are executed sequentially as a multi-turn conversation: each step's
+    prompt and response are threaded through the messages array. Aggregate
+    metrics are stored on the top-level result; per-step detail is in result.steps.
 
     This is the shared core logic used by both /api/run and /api/run-chain.
     """
+    # Backward compat: accept preset_prompt as single-step alias
+    if preset_steps is None:
+        preset_steps = [preset_prompt] if preset_prompt else [""]
+
     headers = {"Content-Type": "application/json"}
     if endpoint.api_key:
         # Local servers (llama.cpp/llama-swap) often have no key; sending
@@ -386,20 +397,8 @@ async def _run_single_benchmark(
         endpoint_name=endpoint.name,
         model=model,
         preset_name=preset_name,
-        prompt=preset_prompt,
+        prompt=preset_steps[0],
     )
-
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": preset_prompt}],
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "stream": True,
-        # Ask the server to include a usage chunk so token counts are
-        # measured rather than estimated (ignored by servers that don't
-        # support it).
-        "stream_options": {"include_usage": True},
-    }
 
     async def _fail(error: str, category: ErrorCategory, status_code: int | None = None,
                     start: float | None = None) -> BenchmarkResult:
@@ -415,66 +414,112 @@ async def _run_single_benchmark(
         return result
 
     start = time.monotonic()
+    messages: list[dict] = []
+    step_results: list[dict] = []
+    first_token_time: float | None = None
+    total_completion_tokens = 0
+    total_prompt_tokens = 0
+    any_usage_seen = False
+    any_estimated = False
+
+    async def _stream_one_step(client, messages_list) -> tuple:
+        """Stream one step and return (response_text, prompt_tokens, completion_tokens,
+        first_token_ms, usage_seen, step_time_ms)."""
+        payload = {
+            "model": model,
+            "messages": messages_list,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        step_start = time.monotonic()
+        step_first_token = None
+        full_response = []
+        reasoning_response = []
+        usage_seen = False
+        step_prompt_tokens = 0
+        step_completion_tokens = 0
+        done = False
+        sse_buffer = ""
+        async with client.stream("POST", f"{endpoint.base_url}/v1/chat/completions",
+                                 json=payload, headers=headers) as resp:
+            if resp.status_code >= 400:
+                await resp.aread()
+                resp.raise_for_status()
+            async for chunk_bytes in resp.aiter_bytes():
+                if done:
+                    break
+                sse_buffer += chunk_bytes.decode("utf-8", errors="replace")
+                lines = sse_buffer.split("\n")
+                sse_buffer = lines.pop()
+                for line in lines:
+                    line = line.strip()
+                    if not line.startswith("data: "):
+                        continue
+                    json_str = line[6:]
+                    if json_str == "[DONE]":
+                        done = True
+                        break
+                    try:
+                        chunk = json.loads(json_str)
+                    except json.JSONDecodeError:
+                        continue
+                    choices = chunk.get("choices") or []
+                    delta = choices[0].get("delta", {}) if choices else {}
+                    content = delta.get("content") or ""
+                    reasoning = delta.get("reasoning_content") or ""
+                    if content or reasoning:
+                        if step_first_token is None:
+                            step_first_token = (time.monotonic() - step_start) * 1000
+                        if content:
+                            full_response.append(content)
+                        if reasoning:
+                            reasoning_response.append(reasoning)
+                    usage = chunk.get("usage")
+                    if usage:
+                        usage_seen = True
+                        step_prompt_tokens = usage.get("prompt_tokens", 0)
+                        step_completion_tokens = usage.get("completion_tokens", 0)
+        response_text = "".join(full_response) or "".join(reasoning_response)
+        step_time_ms = (time.monotonic() - step_start) * 1000
+        return response_text, step_prompt_tokens, step_completion_tokens, step_first_token, usage_seen, step_time_ms
+
     try:
         async with httpx.AsyncClient(timeout=BENCH_TIMEOUT) as client:
-            first_token_time = None
-            full_response = []
-            reasoning_response = []
-            usage_seen = False
-            done = False
-            sse_buffer = ""
-            async with client.stream("POST", f"{endpoint.base_url}/v1/chat/completions",
-                                     json=payload, headers=headers) as resp:
-                if resp.status_code >= 400:
-                    # Read the body so .text is available for the error report.
-                    await resp.aread()
-                    resp.raise_for_status()
-                async for chunk_bytes in resp.aiter_bytes():
-                    if done:
-                        break
-                    # SSE lines can be split across TCP chunks — buffer and
-                    # only process complete lines, keeping the tail.
-                    sse_buffer += chunk_bytes.decode("utf-8", errors="replace")
-                    lines = sse_buffer.split("\n")
-                    sse_buffer = lines.pop()
-                    for line in lines:
-                        line = line.strip()
-                        if not line.startswith("data: "):
-                            continue
-                        json_str = line[6:]
-                        if json_str == "[DONE]":
-                            done = True
-                            break
-                        try:
-                            chunk = json.loads(json_str)
-                        except json.JSONDecodeError:
-                            continue
-                        # Usage-only chunks (sent when include_usage is
-                        # requested) carry an empty choices array — guard
-                        # against indexing it.
-                        choices = chunk.get("choices") or []
-                        delta = choices[0].get("delta", {}) if choices else {}
-                        content = delta.get("content") or ""
-                        # Reasoning models stream thinking tokens as
-                        # reasoning_content. They are real generated tokens,
-                        # so they must count for TTFT — otherwise the
-                        # generation window shrinks to the final answer burst
-                        # and tok/s is inflated far beyond the true speed.
-                        reasoning = delta.get("reasoning_content") or ""
-                        if content or reasoning:
-                            if first_token_time is None:
-                                first_token_time = (time.monotonic() - start) * 1000
-                            if content:
-                                full_response.append(content)
-                            if reasoning:
-                                reasoning_response.append(reasoning)
+            for step_idx, step_prompt in enumerate(preset_steps):
+                messages.append({"role": "user", "content": step_prompt})
+                try:
+                    resp_text, s_pt, s_ct, s_ttft, s_usage, s_time = await _stream_one_step(client, messages)
+                except httpx.HTTPStatusError as e:
+                    result.steps = step_results  # attach completed steps before persisting
+                    return await _fail(f"HTTP {e.response.status_code}: {e.response.text} (step {step_idx+1})",
+                                       ErrorCategory.HTTP_ERROR, e.response.status_code, start)
+                except httpx.TimeoutException as e:
+                    result.steps = step_results
+                    return await _fail(str(e), ErrorCategory.TIMEOUT, start=start)
+                except (httpx.ConnectError, httpx.NetworkError) as e:
+                    result.steps = step_results
+                    return await _fail(str(e), ErrorCategory.NETWORK, start=start)
 
-                        usage = chunk.get("usage")
-                        if usage:
-                            usage_seen = True
-                            result.prompt_tokens = usage.get("prompt_tokens", 0)
-                            result.completion_tokens = usage.get("completion_tokens", 0)
-                            result.total_tokens = usage.get("total_tokens", 0)
+                messages.append({"role": "assistant", "content": resp_text})
+                step_results.append({
+                    "prompt": step_prompt,
+                    "response": resp_text,
+                    "prompt_tokens": s_pt,
+                    "completion_tokens": s_ct,
+                    "total_time_ms": s_time,
+                })
+                if s_ttft is not None and first_token_time is None:
+                    first_token_time = (time.monotonic() - start) * 1000
+                total_completion_tokens += s_ct
+                if s_usage:
+                    total_prompt_tokens = s_pt  # last step's usage reflects full context
+                    any_usage_seen = True
+                else:
+                    total_prompt_tokens += max(1, len(step_prompt) // 4)
+                    any_estimated = True
+
     except httpx.HTTPStatusError as e:
         return await _fail(f"HTTP {e.response.status_code}: {e.response.text}",
                            ErrorCategory.HTTP_ERROR, e.response.status_code, start)
@@ -483,20 +528,23 @@ async def _run_single_benchmark(
     except (httpx.ConnectError, httpx.NetworkError) as e:
         return await _fail(str(e), ErrorCategory.NETWORK, start=start)
 
-    # If the model only produced reasoning tokens, keep them as the
-    # response so the run isn't recorded as empty output.
-    result.response = "".join(full_response) or "".join(reasoning_response)
+    result.steps = step_results
+    result.response = step_results[-1]["response"] if step_results else ""
     result.output_length = len(result.response)
     result.total_time_ms = (time.monotonic() - start) * 1000
     result.time_to_first_token_ms = first_token_time or 0
+    result.completion_tokens = total_completion_tokens
+    result.prompt_tokens = total_prompt_tokens
 
     # Fallback token estimation when the API doesn't return usage.
-    if not usage_seen:
+    if not any_usage_seen:
         result.tokens_estimated = True
         if result.completion_tokens == 0:
             result.completion_tokens = max(1, len(result.response) // 4)
         if result.prompt_tokens == 0:
-            result.prompt_tokens = max(1, len(preset_prompt) // 4)
+            result.prompt_tokens = max(1, len(preset_steps[0]) // 4)
+        any_estimated = True
+    result.tokens_estimated = any_estimated
     result.total_tokens = result.prompt_tokens + result.completion_tokens
 
     generation_ms = result.total_time_ms - (result.time_to_first_token_ms or 0)
@@ -532,13 +580,25 @@ async def get_presets():
 
 @app.post("/api/presets")
 async def create_preset(data: PresetCreate):
-    p = PromptPreset(key=data.key, name=data.name, prompt=data.prompt, description=data.description)
+    steps = [s.strip() for s in data.steps if s.strip()]
+    if not steps and data.prompt.strip():
+        steps = [data.prompt.strip()]
+    if not steps:
+        raise HTTPException(400, "Preset must have at least one prompt step")
+    prompt = steps[0]
+    p = PromptPreset(key=data.key, name=data.name, prompt=prompt, description=data.description, steps=steps)
     return db.save_preset(p)
 
 
 @app.put("/api/presets/{preset_id}")
 async def update_preset(preset_id: str, data: PresetUpdate):
-    p = PromptPreset(id=data.id, key=data.key, name=data.name, prompt=data.prompt, description=data.description)
+    steps = [s.strip() for s in data.steps if s.strip()]
+    if not steps and data.prompt.strip():
+        steps = [data.prompt.strip()]
+    if not steps:
+        raise HTTPException(400, "Preset must have at least one prompt step")
+    prompt = steps[0]
+    p = PromptPreset(id=data.id, key=data.key, name=data.name, prompt=prompt, description=data.description, steps=steps)
     return db.save_preset(p)
 
 
@@ -680,7 +740,7 @@ async def run_benchmark(data: BenchmarkRun):
         endpoint=ep,
         model=data.model,
         preset_name=preset["name"],
-        preset_prompt=preset["prompt"],
+        preset_steps=preset.get("steps") or [preset["prompt"]],
         max_tokens=data.max_tokens,
         temperature=data.temperature,
     )
