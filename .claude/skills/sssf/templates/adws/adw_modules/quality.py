@@ -141,7 +141,7 @@ def test(run) -> QualityCheckResult:
         name="test",
         area="backend",
         operation="build",
-        argv=_placeholder("test"),        # e.g. ["bun", "test"] or ["uv", "run", "pytest", "-q"]
+        argv=["uv", "run", "pytest", "tests/", "-v", "2>&1"],        # e.g. ["bun", "test"] or ["uv", "run", "pytest", "-q"]
         timeout_seconds=600,
     ), run)
 
