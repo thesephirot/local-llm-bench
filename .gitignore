@@ -3,7 +3,7 @@ benchmarks.db
 .claude/*
 adws/*
 justfile
-*.env.sample
+.env.sample
 # ─── Python ───────────────────────────────────────────────
 __pycache__/
 *.py[cod]
