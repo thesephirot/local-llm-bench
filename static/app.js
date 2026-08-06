@@ -1,5 +1,6 @@
 // LLM Benchmark Dashboard
-let presets={},running=false,sortCol='created_at',sortDir='desc',allResults=[],chartInstances={},allSwapConfigs=[],compareSelected=[],chainSelected=new Set(),swapCfgSelected=[];
+let presets={},running=false,sortCol='created_at',sortDir='desc',allResults=[],chartInstances={},allChainConfigs=[],compareSelected=[],chainSelected=new Set(),chainCfgSelected=[];
+let presetSteps=[];  // steps editor state
 const $=s=>document.getElementById(s);
 const esc=s=>{const d=document.createElement('div');d.textContent=s;return d.innerHTML};
 const fmt=d=>d?new Date(d).toLocaleString():'—';
@@ -9,7 +10,7 @@ const fmtNum=v=>v!=null&&v!==''?Number(v).toLocaleString():'—';
 const fmtDec=(v,d=1)=>v!=null?v.toFixed(d):'—';
 const api=(p,o={})=>fetch(p,{headers:{'Content-Type':'application/json'},...o}).then(async r=>{if(!r.ok)throw new Error(r.status+': '+await r.text());return r.json()});
 
-(async()=>{await loadPresets();await loadEndpoints();await loadSwapConfigs();checkReady();switchTab('dashboard');})();
+(async()=>{await loadPresets();await loadEndpoints();await loadChainConfigs();checkReady();switchTab('dashboard');})();
 
 // Live chain status bar — polls the backend so progress is visible even
 // after a page reload mid-chain (execution is server-side).
@@ -58,20 +59,42 @@ async function loadPresets(){
   presets=await api('/api/presets');
   const list=$('presetList'),sel=$('selPreset');list.innerHTML='';sel.innerHTML='<option value="">— preset —</option>';
   for(const[k,p]of Object.entries(presets)){
+    const stepBadge=(p.steps&&p.steps.length>1)?`<span class="text-[9px] text-gray-600 ml-1">· ${p.steps.length} steps</span>`:'';
     const btn=document.createElement('button');btn.className='w-full text-left px-3 py-1.5 rounded-lg text-sm hover:bg-surface-300 transition-colors preset-btn group relative';
-    btn.dataset.key=k;btn.innerHTML=`<div class="font-medium text-xs truncate">${p.name}</div><div class="text-[10px] text-gray-500 truncate">${p.description}</div><span class="hidden group-hover:flex absolute right-1 top-1 gap-0.5"><button onclick="event.stopPropagation();editPreset('${p.id}','${k}')" class="text-gray-500 hover:text-gray-300 text-[10px] px-1">✏️</button><button onclick="event.stopPropagation();removePreset('${p.id}')" class="text-red-500 hover:text-red-400 text-[10px] px-1">✕</button></span>`;
+    btn.dataset.key=k;btn.innerHTML=`<div class="font-medium text-xs truncate">${p.name}${stepBadge}</div><div class="text-[10px] text-gray-500 truncate">${p.description}</div><span class="hidden group-hover:flex absolute right-1 top-1 gap-0.5"><button onclick="event.stopPropagation();editPreset('${p.id}','${k}')" class="text-gray-500 hover:text-gray-300 text-[10px] px-1">✏️</button><button onclick="event.stopPropagation();removePreset('${p.id}')" class="text-red-500 hover:text-red-400 text-[10px] px-1">✕</button></span>`;
     btn.onclick=()=>selectPreset(k);list.appendChild(btn);
     const opt=document.createElement('option');opt.value=k;opt.textContent=p.name;sel.appendChild(opt);
   }
-  sel.onchange=()=>selectPreset(sel.value);populateSwapConfigPresets();
+  sel.onchange=()=>selectPreset(sel.value);populateChainConfigPresets();
 }
 function selectPreset(key){
   Object.keys(presets).forEach(k=>{const b=document.querySelector(`.preset-btn[data-key="${k}"]`);if(b){b.classList.toggle('bg-surface-300',k===key);b.classList.toggle('ring-1',k===key);b.classList.toggle('ring-cyan-500',k===key)}});
   $('selPreset').value=key;checkReady();
 }
-function showPresetModal(){$('presetModal').classList.remove('hidden');$('presetModalTitle').textContent='Add Preset';$('presetId').value='';$('presetKey').value='';$('presetName').value='';$('presetPrompt').value='';$('presetDesc').value='';$('presetKey').disabled=false}
-function editPreset(id,key){const p=presets[key];if(!p)return;$('presetModal').classList.remove('hidden');$('presetModalTitle').textContent='Edit Preset';$('presetId').value=id;$('presetKey').value=key;$('presetName').value=p.name;$('presetPrompt').value=p.prompt;$('presetDesc').value=p.description;$('presetKey').disabled=true}
-async function savePreset(){const id=$('presetId').value,body={key:$('presetKey').value,name:$('presetName').value,prompt:$('presetPrompt').value,description:$('presetDesc').value};if(id){body.id=id;await api('/api/presets/'+id,{method:'PUT',body:JSON.stringify(body)})}else await api('/api/presets',{method:'POST',body:JSON.stringify(body)});closeModal('presetModal');await loadPresets();checkReady()}
+function showPresetModal(){$('presetModal').classList.remove('hidden');$('presetModalTitle').textContent='Add Preset';$('presetId').value='';$('presetKey').value='';$('presetName').value='';$('presetDesc').value='';$('presetKey').disabled=false;presetSteps=[''];renderPresetSteps()}
+function editPreset(id,key){const p=presets[key];if(!p)return;$('presetModal').classList.remove('hidden');$('presetModalTitle').textContent='Edit Preset';$('presetId').value=id;$('presetKey').value=key;$('presetName').value=p.name;$('presetDesc').value=p.description;$('presetKey').disabled=true;presetSteps=(p.steps&&p.steps.length)?[...p.steps]:[p.prompt||''];renderPresetSteps()}
+
+// Steps editor
+function renderPresetSteps(){
+  const el=$('presetStepsList');if(!el)return;
+  el.innerHTML=presetSteps.map((s,i)=>{
+    const canUp=i>0;const canDown=i<presetSteps.length-1;
+    const canDel=presetSteps.length>1;
+    return`<div class="flex items-start gap-2">
+      <span class="text-xs text-gray-500 mt-2 w-4 shrink-0">${i+1}.</span>
+      <textarea class="preset-step-input flex-1 bg-surface border border-surface-400 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500" rows="2" oninput="presetSteps[${i}]=this.value">${esc(s)}</textarea>
+      <div class="flex flex-col gap-0.5 shrink-0 mt-1">
+        <button ${canUp?'':'disabled class="opacity-30"'} onclick="movePresetStep(${i},-1)" class="text-gray-500 hover:text-gray-300 text-[10px] px-1">↑</button>
+        <button ${canDown?'':'disabled class="opacity-30"'} onclick="movePresetStep(${i},1)" class="text-gray-500 hover:text-gray-300 text-[10px] px-1">↓</button>
+        <button ${canDel?'':'disabled class="opacity-30"'} onclick="removePresetStep(${i})" class="text-red-500 hover:text-red-400 text-[10px] px-1">✕</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+function addPresetStep(t=''){presetSteps.push(t);renderPresetSteps()}
+function removePresetStep(i){presetSteps.splice(i,1);renderPresetSteps()}
+function movePresetStep(i,d){const j=i+d;if(j<0||j>=presetSteps.length)return;[presetSteps[i],presetSteps[j]]=[presetSteps[j],presetSteps[i]];renderPresetSteps()}
+async function savePreset(){const id=$('presetId').value;const steps=[...document.querySelectorAll('.preset-step-input')].map(t=>t.value.trim()).filter(Boolean);if(!steps.length){alert('At least one step is required');return}const body={key:$('presetKey').value,name:$('presetName').value,prompt:steps[0],description:$('presetDesc').value,steps};if(id){body.id=id;await api('/api/presets/'+id,{method:'PUT',body:JSON.stringify(body)})}else await api('/api/presets',{method:'POST',body:JSON.stringify(body)});closeModal('presetModal');await loadPresets();checkReady()}
 async function removePreset(id){if(!confirm('Delete preset?'))return;await api('/api/presets/'+id,{method:'DELETE'});await loadPresets()}
 
 // Endpoints
@@ -82,7 +105,7 @@ async function loadEndpoints(){
     div.innerHTML=`<span class="flex-1 truncate" onclick="selEndpoint('${ep.id}')">${esc(ep.name)}</span><button onclick="editEndpoint('${ep.id}')" class="hidden group-hover:inline text-gray-500 hover:text-gray-300 text-xs">✏️</button><button onclick="removeEndpoint('${ep.id}')" class="hidden group-hover:inline text-red-500 hover:text-red-400 text-xs">🗑️</button>`;
     list.appendChild(div);const opt=document.createElement('option');opt.value=ep.id;opt.textContent=ep.name;sel.appendChild(opt);
   }
-  populateSwapConfigEndpoints();checkReady();
+  populateChainConfigEndpoints();checkReady();
 }
 function selEndpoint(id){$('selEndpoint').value=id;onEndpointChange()}
 function onEndpointChange(){$('selModel').innerHTML='<option value="">— model —</option>';loadModels();checkReady()}
@@ -94,19 +117,19 @@ async function loadModels(){const epId=$('selEndpoint').value,sel=$('selModel');
 function checkReady(){const ep=$('selEndpoint')?.value||'',md=$('selModel')?.value||'',ps=$('selPreset')?.value||'',btn=$('btnRun');if(btn)btn.disabled=!(ep&&md&&ps)||running}
 
 // Chain Configs
-async function loadSwapConfigs(){
-  allSwapConfigs=await api('/api/swap-configs');const list=$('swapConfigList');list.innerHTML='';
-  if(!allSwapConfigs.length){list.innerHTML='<p class="text-[10px] text-gray-600 px-3">No configs</p>';renderChainConfigList();return}
-  for(const cfg of allSwapConfigs){
+async function loadChainConfigs(){
+  allChainConfigs=await api('/api/chain-configs');const list=$('chainConfigList');list.innerHTML='';
+  if(!allChainConfigs.length){list.innerHTML='<p class="text-[10px] text-gray-600 px-3">No configs</p>';renderChainConfigList();return}
+  for(const cfg of allChainConfigs){
     const div=document.createElement('div');div.className='group flex items-center gap-2 px-2 py-1 rounded text-xs hover:bg-surface-300 cursor-pointer';
-    div.innerHTML=`<span class="flex-1 truncate" onclick="loadSwapConfig('${cfg.id}')" title="${esc((cfg.models||[]).join(', '))}">${esc(cfg.name)}</span><span class="text-[9px] text-gray-600 truncate max-w-[80px]">×${(cfg.models||[]).length}</span><button onclick="editSwapConfig('${cfg.id}')" class="hidden group-hover:inline text-gray-500 hover:text-gray-300 text-[10px]">✏️</button><button onclick="removeSwapConfig('${cfg.id}')" class="hidden group-hover:inline text-red-500 hover:text-red-400 text-[10px]">✕</button>`;
+    div.innerHTML=`<span class="flex-1 truncate" onclick="loadChainConfig('${cfg.id}')" title="${esc((cfg.models||[]).join(', '))}">${esc(cfg.name)}</span><span class="text-[9px] text-gray-600 truncate max-w-[80px]">×${(cfg.models||[]).length}</span><button onclick="editChainConfig('${cfg.id}')" class="hidden group-hover:inline text-gray-500 hover:text-gray-300 text-[10px]">✏️</button><button onclick="removeChainConfig('${cfg.id}')" class="hidden group-hover:inline text-red-500 hover:text-red-400 text-[10px]">✕</button>`;
     list.appendChild(div);
   }
   renderChainConfigList();
 }
-function showSwapConfigModal(){$('swapConfigModal').classList.remove('hidden');$('swapConfigModalTitle').textContent='Add Chain Config';$('swapCfgId').value='';$('swapCfgName').value='';swapCfgSelected=[];$('swapCfgModelList').innerHTML='<p class="text-gray-600 text-xs">— pick endpoint first —</p>';$('swapCfgMaxTokens').value='2048';$('swapCfgTemp').value='0.7';$('swapCfgNotes').value='';populateSwapConfigEndpoints();populateSwapConfigPresets()}
-async function loadSwapCfgModels(){
-  const epId=$('swapCfgEndpoint').value,el=$('swapCfgModelList');
+function showChainConfigModal(){$('chainConfigModal').classList.remove('hidden');$('chainConfigModalTitle').textContent='Add Chain Config';$('chainCfgId').value='';$('chainCfgName').value='';chainCfgSelected=[];$('chainCfgModelList').innerHTML='<p class="text-gray-600 text-xs">— pick endpoint first —</p>';$('chainCfgMaxTokens').value='2048';$('chainCfgTemp').value='0.7';$('chainCfgNotes').value='';populateChainConfigEndpoints();populateChainConfigPresets()}
+async function loadChainCfgModels(){
+  const epId=$('chainCfgEndpoint').value,el=$('chainCfgModelList');
   if(!epId){el.innerHTML='<p class="text-gray-600 text-xs">— pick endpoint first —</p>';return}
   el.innerHTML='<p class="text-gray-600 text-xs">— loading… —</p>';
   let models=[];
@@ -114,30 +137,30 @@ async function loadSwapCfgModels(){
   catch(e){el.innerHTML=`<p class="text-red-400 text-xs">⚠ ${esc(e.message)}</p>`;return}
   // keep saved models the endpoint no longer lists, so they stay editable
   const ids=models.map(m=>m.id);
-  swapCfgSelected.filter(m=>!ids.includes(m)).forEach(m=>models.push({id:m}));
+  chainCfgSelected.filter(m=>!ids.includes(m)).forEach(m=>models.push({id:m}));
   el.innerHTML=models.map(m=>{
-    const checked=swapCfgSelected.includes(m.id)?'checked':'';
-    return`<label class="flex items-center gap-1.5 cursor-pointer hover:text-gray-200 text-xs"><input type="checkbox" data-model="${esc(m.id)}" ${checked} onchange="toggleSwapCfgModel(this)" class="rounded bg-surface border-surface-400 text-cyan-500 focus:ring-cyan-500 w-3 h-3"><span class="flex-1 truncate">${esc(m.id)}</span></label>`;
+    const checked=chainCfgSelected.includes(m.id)?'checked':'';
+    return`<label class="flex items-center gap-1.5 cursor-pointer hover:text-gray-200 text-xs"><input type="checkbox" data-model="${esc(m.id)}" ${checked} onchange="toggleChainCfgModel(this)" class="rounded bg-surface border-surface-400 text-cyan-500 focus:ring-cyan-500 w-3 h-3"><span class="flex-1 truncate">${esc(m.id)}</span></label>`;
   }).join('')||'<p class="text-gray-600 text-xs">— no models on this endpoint —</p>';
 }
-function toggleSwapCfgModel(cb){
+function toggleChainCfgModel(cb){
   const m=cb.dataset.model;
-  if(cb.checked){if(!swapCfgSelected.includes(m))swapCfgSelected.push(m)}
-  else swapCfgSelected=swapCfgSelected.filter(x=>x!==m);
+  if(cb.checked){if(!chainCfgSelected.includes(m))chainCfgSelected.push(m)}
+  else chainCfgSelected=chainCfgSelected.filter(x=>x!==m);
 }
-async function editSwapConfig(id){const cfg=allSwapConfigs.find(c=>c.id===id);if(!cfg)return;$('swapConfigModal').classList.remove('hidden');$('swapConfigModalTitle').textContent='Edit Chain Config';$('swapCfgId').value=id;$('swapCfgName').value=cfg.name;$('swapCfgMaxTokens').value=cfg.max_tokens;$('swapCfgTemp').value=cfg.temperature;$('swapCfgNotes').value=cfg.notes||'';populateSwapConfigEndpoints();populateSwapConfigPresets();$('swapCfgEndpoint').value=cfg.endpoint_id;$('swapCfgPreset').value=cfg.preset_key;swapCfgSelected=[...(cfg.models||[])];await loadSwapCfgModels()}
-async function saveSwapConfig(){const id=$('swapCfgId').value,body={name:$('swapCfgName').value,endpoint_id:$('swapCfgEndpoint').value,models:[...swapCfgSelected],preset_key:$('swapCfgPreset').value,max_tokens:parseInt($('swapCfgMaxTokens').value)||2048,temperature:parseFloat($('swapCfgTemp').value)||0.7,notes:$('swapCfgNotes').value};if(!body.name||!body.endpoint_id||!body.models.length||!body.preset_key){alert('Name, endpoint, preset and at least one model are required.');return}if(id){body.id=id;await api('/api/swap-configs/'+id,{method:'PUT',body:JSON.stringify(body)})}else await api('/api/swap-configs',{method:'POST',body:JSON.stringify(body)});closeModal('swapConfigModal');await loadSwapConfigs()}
-async function removeSwapConfig(id){if(!confirm('Delete config?'))return;await api('/api/swap-configs/'+id,{method:'DELETE'});await loadSwapConfigs()}
-async function loadSwapConfig(id){const cfg=allSwapConfigs.find(c=>c.id===id);if(!cfg)return;$('selEndpoint').value=cfg.endpoint_id;$('selModel').innerHTML='<option value="">— loading… —</option>';await loadModels();$('selModel').value=(cfg.models||[])[0]||'';$('selPreset').value=cfg.preset_key;$('inpMaxTokens').value=cfg.max_tokens;$('inpTemp').value=cfg.temperature;checkReady()}
-function populateSwapConfigEndpoints(){const sel=$('swapCfgEndpoint');if(!sel)return;sel.innerHTML='<option value="">— endpoint —</option>';document.querySelectorAll('#selEndpoint option').forEach(o=>{if(o.value){const opt=document.createElement('option');opt.value=o.value;opt.textContent=o.textContent;sel.appendChild(opt)}})}
-function populateSwapConfigPresets(){const sel=$('swapCfgPreset');if(!sel)return;sel.innerHTML='<option value="">— preset —</option>';for(const[k,p]of Object.entries(presets)){const opt=document.createElement('option');opt.value=k;opt.textContent=p.name;sel.appendChild(opt)}}
+async function editChainConfig(id){const cfg=allChainConfigs.find(c=>c.id===id);if(!cfg)return;$('chainConfigModal').classList.remove('hidden');$('chainConfigModalTitle').textContent='Edit Chain Config';$('chainCfgId').value=id;$('chainCfgName').value=cfg.name;$('chainCfgMaxTokens').value=cfg.max_tokens;$('chainCfgTemp').value=cfg.temperature;$('chainCfgNotes').value=cfg.notes||'';populateChainConfigEndpoints();populateChainConfigPresets();$('chainCfgEndpoint').value=cfg.endpoint_id;$('chainCfgPreset').value=cfg.preset_key;chainCfgSelected=[...(cfg.models||[])];await loadChainCfgModels()}
+async function saveChainConfig(){const id=$('chainCfgId').value,body={name:$('chainCfgName').value,endpoint_id:$('chainCfgEndpoint').value,models:[...chainCfgSelected],preset_key:$('chainCfgPreset').value,max_tokens:parseInt($('chainCfgMaxTokens').value)||2048,temperature:parseFloat($('chainCfgTemp').value)||0.7,notes:$('chainCfgNotes').value};if(!body.name||!body.endpoint_id||!body.models.length||!body.preset_key){alert('Name, endpoint, preset and at least one model are required.');return}if(id){body.id=id;await api('/api/chain-configs/'+id,{method:'PUT',body:JSON.stringify(body)})}else await api('/api/chain-configs',{method:'POST',body:JSON.stringify(body)});closeModal('chainConfigModal');await loadChainConfigs()}
+async function removeChainConfig(id){if(!confirm('Delete config?'))return;await api('/api/chain-configs/'+id,{method:'DELETE'});await loadChainConfigs()}
+async function loadChainConfig(id){const cfg=allChainConfigs.find(c=>c.id===id);if(!cfg)return;$('selEndpoint').value=cfg.endpoint_id;$('selModel').innerHTML='<option value="">— loading… —</option>';await loadModels();$('selModel').value=(cfg.models||[])[0]||'';$('selPreset').value=cfg.preset_key;$('inpMaxTokens').value=cfg.max_tokens;$('inpTemp').value=cfg.temperature;checkReady()}
+function populateChainConfigEndpoints(){const sel=$('chainCfgEndpoint');if(!sel)return;sel.innerHTML='<option value="">— endpoint —</option>';document.querySelectorAll('#selEndpoint option').forEach(o=>{if(o.value){const opt=document.createElement('option');opt.value=o.value;opt.textContent=o.textContent;sel.appendChild(opt)}})}
+function populateChainConfigPresets(){const sel=$('chainCfgPreset');if(!sel)return;sel.innerHTML='<option value="">— preset —</option>';for(const[k,p]of Object.entries(presets)){const opt=document.createElement('option');opt.value=k;opt.textContent=p.name;sel.appendChild(opt)}}
 
 // ── Chain Benchmark UI ──────────────────────────────────────
 
 function renderChainConfigList(){
-  const el=$('chainConfigList');if(!el)return;
-  if(!allSwapConfigs.length){el.innerHTML='<p class="text-gray-600">No chain configs — create one first</p>';return}
-  el.innerHTML=allSwapConfigs.map(cfg=>{
+  const el=$('chainRunConfigList');if(!el)return;
+  if(!allChainConfigs.length){el.innerHTML='<p class="text-gray-600">No chain configs — create one first</p>';return}
+  el.innerHTML=allChainConfigs.map(cfg=>{
     const checked=chainSelected.has(cfg.id)?'checked':'';
     return`<label class="flex items-center gap-1.5 cursor-pointer hover:text-gray-200"><input type="checkbox" data-cfg-id="${esc(cfg.id)}" ${checked} onchange="toggleChainConfig(this)" class="rounded bg-surface border-surface-400 text-purple-500 focus:ring-purple-500 w-3 h-3"><span class="flex-1 truncate" title="${esc((cfg.models||[]).join(', '))}">${esc(cfg.name)}</span><span class="text-gray-600 shrink-0">×${(cfg.models||[]).length}</span></label>`;
   }).join('');
@@ -156,8 +179,8 @@ async function runChainBenchmarkStream(){
   if(running||chainSelected.size===0)return;
   running=true;updateRunChainButton();
   // Drop configs that were deleted since the page loaded
-  try{await loadSwapConfigs()}catch(e){}
-  const valid=new Set(allSwapConfigs.map(c=>c.id));
+  try{await loadChainConfigs()}catch(e){}
+  const valid=new Set(allChainConfigs.map(c=>c.id));
   chainSelected.forEach(id=>{if(!valid.has(id))chainSelected.delete(id)});
   if(chainSelected.size===0){running=false;updateRunChainButton();switchTab('dashboard');$('panel-dashboard').innerHTML='<div class="text-center py-24 text-gray-400"><p>No valid configs selected — they may have been deleted.</p></div>';return}
   switchTab('dashboard');
@@ -311,7 +334,7 @@ function renderHistoryTable(){
   panel.innerHTML=`<div class="max-w-7xl mx-auto space-y-4 fade-in"><div class="flex items-center justify-between"><h2 class="text-lg font-semibold">History (${allResults.length} runs)</h2><div class="flex gap-2"><button onclick="historyFilterSrc=null;loadHistory()" class="px-3 py-1.5 text-xs bg-surface-200 hover:bg-surface-300 border border-surface-400 rounded-lg">↻ Refresh</button><button onclick="clearAllResults()" class="px-3 py-1.5 text-xs bg-red-900/30 hover:bg-red-900/50 border border-red-800/50 text-red-400 rounded-lg">Clear All</button></div></div><div class="flex flex-wrap gap-3"><select id="filterModel" onchange="loadHistory()" class="bg-surface-200 border border-surface-400 rounded-lg px-3 py-1.5 text-xs"><option value="">All Models</option></select><select id="filterPreset" onchange="loadHistory()" class="bg-surface-200 border border-surface-400 rounded-lg px-3 py-1.5 text-xs"><option value="">All Presets</option></select><select id="filterEndpoint" onchange="loadHistory()" class="bg-surface-200 border border-surface-400 rounded-lg px-3 py-1.5 text-xs"><option value="">All Endpoints</option></select><input type="date" id="filterFrom" onchange="loadHistory()" class="bg-surface-200 border border-surface-400 rounded-lg px-3 py-1.5 text-xs" title="From"><input type="date" id="filterTo" onchange="loadHistory()" class="bg-surface-200 border border-surface-400 rounded-lg px-3 py-1.5 text-xs" title="To"></div><div class="bg-surface-200 border border-surface-300 rounded-xl overflow-hidden"><div class="overflow-x-auto"><table class="sortable w-full text-sm"><thead><tr class="border-b border-surface-300 bg-surface/80">${Object.keys(cl).map(c=>`<th class="text-${lc.includes(c)?'left':'right'} px-4 py-2 text-xs font-semibold text-gray-400 uppercase" onclick="handleSort('${c}')">${cl[c]}${sortCol===c?(sortDir==='asc'?' ▲':' ▼'):''}</th>`).join('')}<th class="px-4 py-2"></th></tr></thead><tbody class="divide-y divide-surface-300/50">${sorted.length?sorted.map(r=>`<tr class="hover:bg-surface-300/50"><td class="px-4 py-2 text-xs text-gray-300">${r.success?'':`<span class="text-red-400" title="${esc(r.error||'failed').replace(/"/g,'&quot;')}">⚠ </span>`}${fmt(r.created_at)}</td><td class="px-4 py-2 text-xs">${esc(r.endpoint_name)}</td><td class="px-4 py-2 text-xs font-medium">${esc(r.model)}</td><td class="px-4 py-2 text-xs text-gray-400">${esc(r.preset_name)}</td><td class="px-4 py-2 text-xs text-right">${fmtSec(r.total_time_ms)}</td><td class="px-4 py-2 text-xs text-right">${fmtMs(r.time_to_first_token_ms)}</td><td class="px-4 py-2 text-xs text-right text-cyan-400 font-medium">${fmtDec(r.tokens_per_second)}</td><td class="px-4 py-2 text-xs text-right">${fmtNum(r.completion_tokens)}</td><td class="px-4 py-2 text-xs text-right">${fmtNum(r.output_length)}</td><td class="px-4 py-2 text-right whitespace-nowrap"><button onclick="showDetail('${r.id}')" class="text-cyan-400 hover:text-cyan-300 text-xs mr-2">View</button><button onclick="deleteResult('${r.id}')" class="text-red-500 hover:text-red-400 text-xs">✕</button></td></tr>`).join(''):'<tr><td colspan="10" class="text-center py-12 text-gray-600 text-sm">No results</td></tr>'}</tbody></table></div></div></div>`;
 }
 function handleSort(c){if(sortCol===c)sortDir=sortDir==='asc'?'desc':'asc';else{sortCol=c;sortDir='desc'}renderHistoryTable()}
-async function showDetail(id){const r=await api('/api/results/'+id);$('detailTitle').textContent=r.endpoint_name+' / '+r.model;$('detailMeta').textContent=r.preset_name+' · '+fmt(r.created_at);$('detailStats').innerHTML=[{l:'TTFT',v:fmtMs(r.time_to_first_token_ms)},{l:'Total',v:fmtSec(r.total_time_ms)},{l:'Tok/s',v:fmtDec(r.tokens_per_second)},{l:'Tokens',v:fmtNum(r.completion_tokens)},{l:'Output',v:(r.output_length||0).toLocaleString()+' ch'}].map(s=>`<div class="bg-surface rounded-lg p-2 text-center"><div class="text-base font-bold text-cyan-400">${s.v}</div><div class="text-xs text-gray-500">${s.l}</div></div>`).join('');$('detailPrompt').textContent=r.prompt;$('detailResponse').textContent=r.response;$('detailModal').classList.remove('hidden')}
+async function showDetail(id){const r=await api('/api/results/'+id);$('detailTitle').textContent=r.endpoint_name+' / '+r.model;$('detailMeta').textContent=r.preset_name+' · '+fmt(r.created_at);$('detailStats').innerHTML=[{l:'TTFT',v:fmtMs(r.time_to_first_token_ms)},{l:'Total',v:fmtSec(r.total_time_ms)},{l:'Tok/s',v:fmtDec(r.tokens_per_second)},{l:'Tokens',v:fmtNum(r.completion_tokens)},{l:'Output',v:(r.output_length||0).toLocaleString()+' ch'}].map(s=>`<div class="bg-surface rounded-lg p-2 text-center"><div class="text-base font-bold text-cyan-400">${s.v}</div><div class="text-xs text-gray-500">${s.l}</div></div>`).join('');const ds=$('detailSteps');if(r.steps&&r.steps.length>1){ds.classList.remove('hidden');ds.innerHTML=r.steps.map((s,i)=>`<div class="bg-surface rounded-lg p-3"><h4 class="text-xs font-semibold text-gray-400 uppercase mb-1">Step ${i+1} Prompt</h4><p class="text-sm text-gray-300 whitespace-pre-wrap mb-2">${esc(s.prompt)}</p><h4 class="text-xs font-semibold text-gray-400 uppercase mb-1">Step ${i+1} Response</h4><div class="text-sm text-gray-200 whitespace-pre-wrap leading-relaxed">${esc(s.response)}</div></div>`).join('')}else{ds.classList.add('hidden');ds.innerHTML=''}$('detailPrompt').textContent=r.prompt;$('detailResponse').textContent=r.response;$('detailModal').classList.remove('hidden')}
 async function deleteResult(id){await api('/api/results/'+id,{method:'DELETE'});historyFilterSrc=null;loadHistory()}
 async function clearAllResults(){if(!confirm('Clear all?'))return;await api('/api/results',{method:'DELETE'});historyFilterSrc=null;loadHistory()}
 

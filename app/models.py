@@ -24,10 +24,11 @@ class PromptPreset:
     name: str = ""
     prompt: str = ""
     description: str = ""
+    steps: list[str] = field(default_factory=list)
 
 
 @dataclass
-class LlamaSwapConfig:
+class ChainConfig:
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     name: str = ""
     endpoint_id: str = ""
@@ -65,6 +66,7 @@ class BenchmarkResult:
     error_category: str = ""   # one of ErrorCategory values
     status_code: int | None = None
     tokens_estimated: bool = False  # True when token counts fell back to char/4 estimate
+    steps: list[dict] = field(default_factory=list)  # per-step {prompt, response, prompt_tokens, completion_tokens, total_time_ms}
 
 
 @dataclass

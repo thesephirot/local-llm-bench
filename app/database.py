@@ -12,7 +12,7 @@ from typing import List
 
 logger = logging.getLogger(__name__)
 
-from .models import EndpointConfig, PromptPreset, LlamaSwapConfig, BenchmarkResult, ChainRunResult, ChainStepResult
+from .models import EndpointConfig, PromptPreset, ChainConfig, BenchmarkResult, ChainRunResult, ChainStepResult
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "benchmarks.db")
 
@@ -33,6 +33,10 @@ SEED_PRESETS = [
 
 def init_db() -> None:
     with get_conn() as conn:
+        # Migrate the legacy swap_configs table to chain_configs (pre-rename DBs)
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "swap_configs" in tables and "chain_configs" not in tables:
+            conn.execute("ALTER TABLE swap_configs RENAME TO chain_configs")
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS endpoints (
                 id TEXT PRIMARY KEY,
@@ -61,16 +65,18 @@ def init_db() -> None:
                 error TEXT NOT NULL DEFAULT '',
                 error_category TEXT NOT NULL DEFAULT '',
                 status_code INTEGER,
-                tokens_estimated INTEGER NOT NULL DEFAULT 0
+                tokens_estimated INTEGER NOT NULL DEFAULT 0,
+                steps TEXT NOT NULL DEFAULT '[]'
             );
             CREATE TABLE IF NOT EXISTS presets (
                 id TEXT PRIMARY KEY,
                 key TEXT UNIQUE NOT NULL,
                 name TEXT NOT NULL,
                 prompt TEXT NOT NULL,
-                description TEXT NOT NULL DEFAULT ''
+                description TEXT NOT NULL DEFAULT '',
+                steps TEXT NOT NULL DEFAULT '[]'
             );
-            CREATE TABLE IF NOT EXISTS swap_configs (
+            CREATE TABLE IF NOT EXISTS chain_configs (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 endpoint_id TEXT NOT NULL,
@@ -119,6 +125,8 @@ def init_db() -> None:
             ("results", "error_category", "TEXT NOT NULL DEFAULT ''"),
             ("results", "status_code", "INTEGER"),
             ("results", "tokens_estimated", "INTEGER NOT NULL DEFAULT 0"),
+            ("presets", "steps", "TEXT NOT NULL DEFAULT '[]'"),
+            ("results", "steps", "TEXT NOT NULL DEFAULT '[]'"),
         ]:
             try:
                 conn.execute(f"ALTER TABLE {col_def[0]} ADD COLUMN {col_def[1]} {col_def[2]}")
@@ -133,7 +141,7 @@ def init_db() -> None:
             ("chain_steps", "benchmark_result_id", "TEXT"),
             ("chain_steps", "error_category", "TEXT NOT NULL DEFAULT ''"),
             ("chain_steps", "status_code", "INTEGER"),
-            ("swap_configs", "models", "TEXT NOT NULL DEFAULT '[]'"),
+            ("chain_configs", "models", "TEXT NOT NULL DEFAULT '[]'"),
             ("chain_runs", "current_step_index", "INTEGER"),
             ("chain_runs", "current_model", "TEXT NOT NULL DEFAULT ''"),
             ("chain_runs", "steps_done", "INTEGER NOT NULL DEFAULT 0"),
@@ -148,13 +156,13 @@ def init_db() -> None:
                 logger.warning("Migration failed for %s.%s", col_def[0], col_def[1], exc_info=True)
 
         # Backfill multi-model list from the legacy single-model column
-        for r in conn.execute("SELECT id, model, models FROM swap_configs").fetchall():
+        for r in conn.execute("SELECT id, model, models FROM chain_configs").fetchall():
             try:
                 existing = json.loads(r["models"] or "[]")
             except json.JSONDecodeError:
                 existing = []
             if not existing and r["model"]:
-                conn.execute("UPDATE swap_configs SET models=? WHERE id=?",
+                conn.execute("UPDATE chain_configs SET models=? WHERE id=?",
                              (json.dumps([r["model"]]), r["id"]))
         conn.commit()
 
@@ -219,17 +227,31 @@ def delete_endpoint(ep_id: str) -> None:
 
 # ── Presets ────────────────────────────────────────────────
 
+def _row_to_preset(row) -> PromptPreset:
+    """Map a presets row to the dataclass, decoding the steps JSON
+    and falling back to [prompt] when steps is empty."""
+    d = dict(row)
+    try:
+        steps = json.loads(d.pop("steps", "[]") or "[]")
+    except json.JSONDecodeError:
+        steps = []
+    if not steps and d.get("prompt"):
+        steps = [d["prompt"]]
+    d["steps"] = steps
+    return PromptPreset(**d)
+
+
 def list_presets() -> List[PromptPreset]:
     with get_conn() as conn:
         rows = conn.execute("SELECT * FROM presets ORDER BY rowid ASC").fetchall()
-    return [PromptPreset(**dict(r)) for r in rows]
+    return [_row_to_preset(r) for r in rows]
 
 
 def save_preset(p: PromptPreset) -> PromptPreset:
     with get_conn() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO presets (id, key, name, prompt, description) VALUES (?,?,?,?,?)",
-            (p.id, p.key, p.name, p.prompt, p.description),
+            "INSERT OR REPLACE INTO presets (id, key, name, prompt, description, steps) VALUES (?,?,?,?,?,?)",
+            (p.id, p.key, p.name, p.prompt, p.description, json.dumps(p.steps)),
         )
         conn.commit()
     return p
@@ -251,14 +273,15 @@ def presets_as_dict() -> dict:
             "name": p.name,
             "prompt": p.prompt,
             "description": p.description,
+            "steps": p.steps,
         }
     return result
 
 
-# ── Swap Configs ───────────────────────────────────────────
+# ── Chain Configs ──────────────────────────────────────────
 
-def _row_to_swap_config(row) -> LlamaSwapConfig:
-    """Map a swap_configs row to the dataclass, decoding the models JSON
+def _row_to_chain_config(row) -> ChainConfig:
+    """Map a chain_configs row to the dataclass, decoding the models JSON
     and falling back to the legacy single-model column."""
     d = dict(row)
     legacy_model = d.pop("model", "")
@@ -269,27 +292,27 @@ def _row_to_swap_config(row) -> LlamaSwapConfig:
     if not models and legacy_model:
         models = [legacy_model]
     d["models"] = models
-    return LlamaSwapConfig(**d)
+    return ChainConfig(**d)
 
 
-def get_swap_config(cfg_id: str) -> LlamaSwapConfig | None:
+def get_chain_config(cfg_id: str) -> ChainConfig | None:
     with get_conn() as conn:
-        row = conn.execute("SELECT * FROM swap_configs WHERE id=?", (cfg_id,)).fetchone()
+        row = conn.execute("SELECT * FROM chain_configs WHERE id=?", (cfg_id,)).fetchone()
     if row is None:
         return None
-    return _row_to_swap_config(row)
+    return _row_to_chain_config(row)
 
 
-def list_swap_configs() -> List[LlamaSwapConfig]:
+def list_chain_configs() -> List[ChainConfig]:
     with get_conn() as conn:
-        rows = conn.execute("SELECT * FROM swap_configs ORDER BY created_at DESC").fetchall()
-    return [_row_to_swap_config(r) for r in rows]
+        rows = conn.execute("SELECT * FROM chain_configs ORDER BY created_at DESC").fetchall()
+    return [_row_to_chain_config(r) for r in rows]
 
 
-def save_swap_config(cfg: LlamaSwapConfig) -> LlamaSwapConfig:
+def save_chain_config(cfg: ChainConfig) -> ChainConfig:
     with get_conn() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO swap_configs (id, name, endpoint_id, endpoint_name, model, models, "
+            "INSERT OR REPLACE INTO chain_configs (id, name, endpoint_id, endpoint_name, model, models, "
             "preset_key, preset_name, max_tokens, temperature, notes, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (cfg.id, cfg.name, cfg.endpoint_id, cfg.endpoint_name,
              cfg.models[0] if cfg.models else "", json.dumps(cfg.models),
@@ -300,9 +323,9 @@ def save_swap_config(cfg: LlamaSwapConfig) -> LlamaSwapConfig:
     return cfg
 
 
-def delete_swap_config(cfg_id: str) -> None:
+def delete_chain_config(cfg_id: str) -> None:
     with get_conn() as conn:
-        conn.execute("DELETE FROM swap_configs WHERE id=?", (cfg_id,))
+        conn.execute("DELETE FROM chain_configs WHERE id=?", (cfg_id,))
         conn.commit()
 
 
@@ -315,17 +338,32 @@ def save_result(r: BenchmarkResult) -> BenchmarkResult:
                 id, endpoint_id, endpoint_name, model, preset_name,
                 prompt, response, prompt_tokens, completion_tokens, total_tokens,
                 time_to_first_token_ms, total_time_ms, tokens_per_second, output_length, created_at,
-                success, error, error_category, status_code, tokens_estimated
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                success, error, error_category, status_code, tokens_estimated, steps
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (r.id, r.endpoint_id, r.endpoint_name, r.model, r.preset_name,
              r.prompt, r.response, r.prompt_tokens, r.completion_tokens, r.total_tokens,
              r.time_to_first_token_ms, r.total_time_ms, r.tokens_per_second,
              r.output_length, r.created_at,
              1 if r.success else 0, r.error, r.error_category, r.status_code,
-             1 if r.tokens_estimated else 0),
+             1 if r.tokens_estimated else 0, json.dumps(r.steps)),
         )
         conn.commit()
     return r
+
+
+def _row_to_benchmark_result(d: dict) -> BenchmarkResult:
+    """Decode the steps JSON column before constructing BenchmarkResult.
+
+    Accepts steps as a JSON string (raw DB row), an already-decoded list
+    (e.g. from get_result), or missing/None."""
+    steps = d.get("steps")
+    if isinstance(steps, str):
+        try:
+            steps = json.loads(steps or "[]")
+        except json.JSONDecodeError:
+            steps = []
+    d["steps"] = steps if isinstance(steps, list) else []
+    return BenchmarkResult(**d)
 
 
 def list_results(limit: int = 200) -> List[BenchmarkResult]:
@@ -333,7 +371,7 @@ def list_results(limit: int = 200) -> List[BenchmarkResult]:
         rows = conn.execute(
             "SELECT * FROM results ORDER BY rowid DESC LIMIT ?", (limit,)
         ).fetchall()
-    return [BenchmarkResult(**dict(r)) for r in rows]
+    return [_row_to_benchmark_result(dict(r)) for r in rows]
 
 
 def delete_result(result_id: str) -> None:
@@ -386,7 +424,7 @@ def list_results_filter(
             f"SELECT * FROM results{where} ORDER BY created_at DESC LIMIT ?",
             params,
         ).fetchall()
-    return [BenchmarkResult(**dict(r)) for r in rows]
+    return [_row_to_benchmark_result(dict(r)) for r in rows]
 
 
 def list_results_compact(limit: int = 200) -> list[dict]:
@@ -434,7 +472,12 @@ def get_result(result_id: str) -> dict | None:
         row = conn.execute("SELECT * FROM results WHERE id = ?", (result_id,)).fetchone()
     if row is None:
         return None
-    return dict(row)
+    d = dict(row)
+    try:
+        d["steps"] = json.loads(d.get("steps", "[]") or "[]")
+    except json.JSONDecodeError:
+        d["steps"] = []
+    return d
 
 
 # ── Comparison ─────────────────────────────────────────────
@@ -722,7 +765,7 @@ def list_chain_steps(chain_run_id: str) -> List[ChainStepResult]:
         if d.get("benchmark_result_id"):
             br = get_result(d["benchmark_result_id"])
             if br:
-                cs.benchmark_result = BenchmarkResult(**br)
+                cs.benchmark_result = _row_to_benchmark_result(br)
         results.append(cs)
     return results
 
