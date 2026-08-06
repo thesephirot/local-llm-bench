@@ -82,7 +82,7 @@ function renderPresetSteps(){
     const canDel=presetSteps.length>1;
     return`<div class="flex items-start gap-2">
       <span class="text-xs text-gray-500 mt-2 w-4 shrink-0">${i+1}.</span>
-      <textarea class="preset-step-input flex-1 bg-surface border border-surface-400 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500" rows="2">${esc(s)}</textarea>
+      <textarea class="preset-step-input flex-1 bg-surface border border-surface-400 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500" rows="2" oninput="presetSteps[${i}]=this.value">${esc(s)}</textarea>
       <div class="flex flex-col gap-0.5 shrink-0 mt-1">
         <button ${canUp?'':'disabled class="opacity-30"'} onclick="movePresetStep(${i},-1)" class="text-gray-500 hover:text-gray-300 text-[10px] px-1">↑</button>
         <button ${canDown?'':'disabled class="opacity-30"'} onclick="movePresetStep(${i},1)" class="text-gray-500 hover:text-gray-300 text-[10px] px-1">↓</button>
@@ -94,7 +94,7 @@ function renderPresetSteps(){
 function addPresetStep(t=''){presetSteps.push(t);renderPresetSteps()}
 function removePresetStep(i){presetSteps.splice(i,1);renderPresetSteps()}
 function movePresetStep(i,d){const j=i+d;if(j<0||j>=presetSteps.length)return;[presetSteps[i],presetSteps[j]]=[presetSteps[j],presetSteps[i]];renderPresetSteps()}
-async function savePreset(){const id=$('presetId').value;const steps=presetSteps.map(s=>{const ta=document.querySelectorAll('.preset-step-input');return ta[presetSteps.indexOf(s)]?ta[presetSteps.indexOf(s)].value:s}).map(s=>s.trim()).filter(Boolean);if(!steps.length){alert('At least one step is required');return}const body={key:$('presetKey').value,name:$('presetName').value,prompt:steps[0],description:$('presetDesc').value,steps};if(id){body.id=id;await api('/api/presets/'+id,{method:'PUT',body:JSON.stringify(body)})}else await api('/api/presets',{method:'POST',body:JSON.stringify(body)});closeModal('presetModal');await loadPresets();checkReady()}
+async function savePreset(){const id=$('presetId').value;const steps=[...document.querySelectorAll('.preset-step-input')].map(t=>t.value.trim()).filter(Boolean);if(!steps.length){alert('At least one step is required');return}const body={key:$('presetKey').value,name:$('presetName').value,prompt:steps[0],description:$('presetDesc').value,steps};if(id){body.id=id;await api('/api/presets/'+id,{method:'PUT',body:JSON.stringify(body)})}else await api('/api/presets',{method:'POST',body:JSON.stringify(body)});closeModal('presetModal');await loadPresets();checkReady()}
 async function removePreset(id){if(!confirm('Delete preset?'))return;await api('/api/presets/'+id,{method:'DELETE'});await loadPresets()}
 
 // Endpoints

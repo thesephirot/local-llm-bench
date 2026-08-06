@@ -489,6 +489,7 @@ async def _run_single_benchmark(
         async with httpx.AsyncClient(timeout=BENCH_TIMEOUT) as client:
             for step_idx, step_prompt in enumerate(preset_steps):
                 messages.append({"role": "user", "content": step_prompt})
+                step_start_offset = (time.monotonic() - start) * 1000
                 try:
                     resp_text, s_pt, s_ct, s_ttft, s_usage, s_time = await _stream_one_step(client, messages)
                 except httpx.HTTPStatusError as e:
@@ -511,7 +512,7 @@ async def _run_single_benchmark(
                     "total_time_ms": s_time,
                 })
                 if s_ttft is not None and first_token_time is None:
-                    first_token_time = (time.monotonic() - start) * 1000
+                    first_token_time = step_start_offset + s_ttft
                 total_completion_tokens += s_ct
                 if s_usage:
                     total_prompt_tokens = s_pt  # last step's usage reflects full context

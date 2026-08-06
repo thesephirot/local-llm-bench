@@ -285,3 +285,162 @@ def test_mid_chain_step_failure(client, wired_endpoint):
     assert body["steps"][0]["prompt"] == "Step A"
 
     RecordingHandler.error_on = 0
+
+
+# ── Regression: Defect 1 — TTFT measured at first token ─────
+
+class _SlowTTFTHandler(BaseHTTPRequestHandler):
+    """Fake LLM that sleeps ~0.15s before first content chunk, then
+    ~0.15s before the second chunk, so TTFT is clearly under total_time.
+
+    Uses chunked transfer encoding to stream incrementally so the client
+    actually receives the first token before the second."""
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers["Content-Length"]))  # consume body
+        import time as _time
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+
+        _time.sleep(0.15)  # delay before first token
+        chunk1 = 'data: {"choices": [{"delta": {"content": "Hello"}}]}\n\n'
+        self.wfile.write(chunk1.encode())
+        self.wfile.flush()
+
+        _time.sleep(0.15)  # delay before second token
+        chunk2 = 'data: {"choices": [{"delta": {"content": " world"}}]}\n\n'
+        chunk2 += 'data: {"choices": [{"delta": {}}], "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}}\n\n'
+        chunk2 += "data: [DONE]\n\n"
+        self.wfile.write(chunk2.encode())
+        self.wfile.flush()
+
+    def do_GET(self):
+        body = json.dumps({"data": [{"id": "fake-model"}]}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.fixture
+def slow_ttft_server():
+    server = HTTPServer(("127.0.0.1", 0), _SlowTTFTHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{server.server_port}"
+    server.shutdown()
+    thread.join(timeout=5)
+    server.server_close()
+
+
+def test_ttft_measured_at_first_token(client, slow_ttft_server):
+    """TTFT must be measured at first-token arrival, not after the step completes.
+
+    Regression test for defect #1: the multi-step refactoring replaced the
+    in-stream TTFT measurement with a post-step monotonic read, making TTFT
+    ~= total_time and corrupting tokens_per_second.
+    """
+    ep = EndpointConfig(name="SlowTTFT", base_url=slow_ttft_server)
+    db.save_endpoint(ep)
+
+    r = client.post("/api/run", json={
+        "endpoint_id": ep.id, "model": "fake-model", "preset": "simple",
+    })
+    assert r.status_code == 200
+    body = r.json()
+    assert body["success"] is True
+
+    ttft = body["time_to_first_token_ms"]
+    total = body["total_time_ms"]
+
+    # TTFT should be well under total_time (we sleep ~0.15s before first token,
+    # then another ~0.15s before second, so total ~300ms+ and TTFT ~150ms)
+    assert ttft < total - 100, f"TTFT {ttft:.0f}ms ~= total {total:.0f}ms — not measured at first token"
+    assert ttft >= 80, f"TTFT {ttft:.0f}ms too small — handler delay not reflected"
+
+    # tokens_per_second should use the generation window (total - ttft), not total
+    # With ttft ~150ms and total ~300ms, generation ~150ms, so tps should be
+    # significantly higher than completion_tokens / total_s
+    if body["completion_tokens"] > 0 and total > 0:
+        tps_from_total = body["completion_tokens"] / (total / 1000)
+        assert body["tokens_per_second"] > 1.3 * tps_from_total, \
+            f"TPS {body['tokens_per_second']:.1f} not using generation window (total-based={tps_from_total:.1f})"
+
+    # Usage-based counts unchanged
+    assert body["prompt_tokens"] == 5
+    assert body["completion_tokens"] == 2
+
+
+# ── Regression: Defect 2 — chain-run retrieval with steps ───
+
+def test_chain_run_retrieval_with_steps(client, _db_path):
+    """db.get_chain_run / GET /api/chains/{id} must not crash when a stored
+    result has steps (list, not JSON string).
+
+    Regression test for defect #2: _row_to_benchmark_result called json.loads
+    on an already-decoded list, raising TypeError.
+    """
+    from app.models import ChainRunResult, ChainStepResult
+
+    # Save a result with steps
+    br = db.BenchmarkResult(
+        endpoint_id="e", endpoint_name="E", model="m", preset_name="p",
+        prompt="p1", response="r1", prompt_tokens=5, completion_tokens=2,
+        total_tokens=7, time_to_first_token_ms=50.0, total_time_ms=100.0,
+        tokens_per_second=20.0, output_length=2, created_at="2025-01-01T00:00:00",
+        steps=[{"prompt": "p1", "response": "r1", "prompt_tokens": 5, "completion_tokens": 2, "total_time_ms": 100.0}],
+    )
+    db.save_result(br)
+
+    # Create a chain run with a step referencing that result
+    cr = ChainRunResult(
+        config_ids=["cfg1"], total_steps=1, completed_steps=1, failed_steps=0,
+        started_at="2025-01-01T00:00:00", finished_at="2025-01-01T00:01:00",
+    )
+    db.save_chain_run(cr)
+
+    cs = ChainStepResult(
+        step_index=0, config_id="cfg1", config_name="Cfg1", model="m",
+        benchmark_result=br, error="", success=True,
+    )
+    db.save_chain_step(cs, cr.id)
+
+    # Must not raise TypeError
+    retrieved = db.get_chain_run(cr.id)
+    assert retrieved is not None
+    assert retrieved.step_results[0].benchmark_result is not None
+    assert retrieved.step_results[0].benchmark_result.steps == [
+        {"prompt": "p1", "response": "r1", "prompt_tokens": 5, "completion_tokens": 2, "total_time_ms": 100.0}
+    ]
+
+    # list_chain_runs also works
+    runs = db.list_chain_runs()
+    assert any(r.id == cr.id for r in runs)
+
+    # HTTP surface: GET /api/chains/{id} returns 200
+    r = client.get(f"/api/chains/{cr.id}")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["step_results"][0]["benchmark_result"]["steps"] is not None
+
+
+def test_row_to_benchmark_result_idempotent(_db_path):
+    """_row_to_benchmark_result handles steps as str, list, or None."""
+    # As JSON string
+    br1 = db._row_to_benchmark_result({"steps": '[{"a":1}]'})
+    assert br1.steps == [{"a": 1}]
+
+    # As already-decoded list
+    br2 = db._row_to_benchmark_result({"steps": [{"prompt": "hi"}]})
+    assert br2.steps == [{"prompt": "hi"}]
+
+    # As None / missing
+    br3 = db._row_to_benchmark_result({"steps": None})
+    assert br3.steps == []
+    br4 = db._row_to_benchmark_result({})
+    assert br4.steps == []
