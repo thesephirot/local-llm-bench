@@ -65,14 +65,16 @@ def init_db() -> None:
                 error TEXT NOT NULL DEFAULT '',
                 error_category TEXT NOT NULL DEFAULT '',
                 status_code INTEGER,
-                tokens_estimated INTEGER NOT NULL DEFAULT 0
+                tokens_estimated INTEGER NOT NULL DEFAULT 0,
+                steps TEXT NOT NULL DEFAULT '[]'
             );
             CREATE TABLE IF NOT EXISTS presets (
                 id TEXT PRIMARY KEY,
                 key TEXT UNIQUE NOT NULL,
                 name TEXT NOT NULL,
                 prompt TEXT NOT NULL,
-                description TEXT NOT NULL DEFAULT ''
+                description TEXT NOT NULL DEFAULT '',
+                steps TEXT NOT NULL DEFAULT '[]'
             );
             CREATE TABLE IF NOT EXISTS chain_configs (
                 id TEXT PRIMARY KEY,
@@ -123,6 +125,8 @@ def init_db() -> None:
             ("results", "error_category", "TEXT NOT NULL DEFAULT ''"),
             ("results", "status_code", "INTEGER"),
             ("results", "tokens_estimated", "INTEGER NOT NULL DEFAULT 0"),
+            ("presets", "steps", "TEXT NOT NULL DEFAULT '[]'"),
+            ("results", "steps", "TEXT NOT NULL DEFAULT '[]'"),
         ]:
             try:
                 conn.execute(f"ALTER TABLE {col_def[0]} ADD COLUMN {col_def[1]} {col_def[2]}")
@@ -223,17 +227,31 @@ def delete_endpoint(ep_id: str) -> None:
 
 # ── Presets ────────────────────────────────────────────────
 
+def _row_to_preset(row) -> PromptPreset:
+    """Map a presets row to the dataclass, decoding the steps JSON
+    and falling back to [prompt] when steps is empty."""
+    d = dict(row)
+    try:
+        steps = json.loads(d.pop("steps", "[]") or "[]")
+    except json.JSONDecodeError:
+        steps = []
+    if not steps and d.get("prompt"):
+        steps = [d["prompt"]]
+    d["steps"] = steps
+    return PromptPreset(**d)
+
+
 def list_presets() -> List[PromptPreset]:
     with get_conn() as conn:
         rows = conn.execute("SELECT * FROM presets ORDER BY rowid ASC").fetchall()
-    return [PromptPreset(**dict(r)) for r in rows]
+    return [_row_to_preset(r) for r in rows]
 
 
 def save_preset(p: PromptPreset) -> PromptPreset:
     with get_conn() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO presets (id, key, name, prompt, description) VALUES (?,?,?,?,?)",
-            (p.id, p.key, p.name, p.prompt, p.description),
+            "INSERT OR REPLACE INTO presets (id, key, name, prompt, description, steps) VALUES (?,?,?,?,?,?)",
+            (p.id, p.key, p.name, p.prompt, p.description, json.dumps(p.steps)),
         )
         conn.commit()
     return p
@@ -255,6 +273,7 @@ def presets_as_dict() -> dict:
             "name": p.name,
             "prompt": p.prompt,
             "description": p.description,
+            "steps": p.steps,
         }
     return result
 
@@ -319,17 +338,26 @@ def save_result(r: BenchmarkResult) -> BenchmarkResult:
                 id, endpoint_id, endpoint_name, model, preset_name,
                 prompt, response, prompt_tokens, completion_tokens, total_tokens,
                 time_to_first_token_ms, total_time_ms, tokens_per_second, output_length, created_at,
-                success, error, error_category, status_code, tokens_estimated
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                success, error, error_category, status_code, tokens_estimated, steps
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (r.id, r.endpoint_id, r.endpoint_name, r.model, r.preset_name,
              r.prompt, r.response, r.prompt_tokens, r.completion_tokens, r.total_tokens,
              r.time_to_first_token_ms, r.total_time_ms, r.tokens_per_second,
              r.output_length, r.created_at,
              1 if r.success else 0, r.error, r.error_category, r.status_code,
-             1 if r.tokens_estimated else 0),
+             1 if r.tokens_estimated else 0, json.dumps(r.steps)),
         )
         conn.commit()
     return r
+
+
+def _row_to_benchmark_result(d: dict) -> BenchmarkResult:
+    """Decode the steps JSON column before constructing BenchmarkResult."""
+    try:
+        d["steps"] = json.loads(d.get("steps", "[]") or "[]")
+    except json.JSONDecodeError:
+        d["steps"] = []
+    return BenchmarkResult(**d)
 
 
 def list_results(limit: int = 200) -> List[BenchmarkResult]:
@@ -337,7 +365,7 @@ def list_results(limit: int = 200) -> List[BenchmarkResult]:
         rows = conn.execute(
             "SELECT * FROM results ORDER BY rowid DESC LIMIT ?", (limit,)
         ).fetchall()
-    return [BenchmarkResult(**dict(r)) for r in rows]
+    return [_row_to_benchmark_result(dict(r)) for r in rows]
 
 
 def delete_result(result_id: str) -> None:
@@ -390,7 +418,7 @@ def list_results_filter(
             f"SELECT * FROM results{where} ORDER BY created_at DESC LIMIT ?",
             params,
         ).fetchall()
-    return [BenchmarkResult(**dict(r)) for r in rows]
+    return [_row_to_benchmark_result(dict(r)) for r in rows]
 
 
 def list_results_compact(limit: int = 200) -> list[dict]:
@@ -438,7 +466,12 @@ def get_result(result_id: str) -> dict | None:
         row = conn.execute("SELECT * FROM results WHERE id = ?", (result_id,)).fetchone()
     if row is None:
         return None
-    return dict(row)
+    d = dict(row)
+    try:
+        d["steps"] = json.loads(d.get("steps", "[]") or "[]")
+    except json.JSONDecodeError:
+        d["steps"] = []
+    return d
 
 
 # ── Comparison ─────────────────────────────────────────────
@@ -726,7 +759,7 @@ def list_chain_steps(chain_run_id: str) -> List[ChainStepResult]:
         if d.get("benchmark_result_id"):
             br = get_result(d["benchmark_result_id"])
             if br:
-                cs.benchmark_result = BenchmarkResult(**br)
+                cs.benchmark_result = _row_to_benchmark_result(br)
         results.append(cs)
     return results
 
