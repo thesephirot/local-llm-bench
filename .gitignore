@@ -1,7 +1,7 @@
 # Benchmarks
 benchmarks.db
-.claude
-adws
+.claude/*
+adws/*
 # ─── Python ───────────────────────────────────────────────
 __pycache__/
 *.py[cod]
