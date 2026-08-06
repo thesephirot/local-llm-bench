@@ -1,5 +1,5 @@
 # Benchmarks
-*.benchmarks.db
+benchmarks.db
 
 # ─── Python ───────────────────────────────────────────────
 __pycache__/
