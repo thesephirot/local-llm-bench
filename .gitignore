@@ -2,6 +2,8 @@
 benchmarks.db
 .claude/*
 adws/*
+justfile
+
 # ─── Python ───────────────────────────────────────────────
 __pycache__/
 *.py[cod]
