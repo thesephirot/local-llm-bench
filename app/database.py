@@ -352,11 +352,17 @@ def save_result(r: BenchmarkResult) -> BenchmarkResult:
 
 
 def _row_to_benchmark_result(d: dict) -> BenchmarkResult:
-    """Decode the steps JSON column before constructing BenchmarkResult."""
-    try:
-        d["steps"] = json.loads(d.get("steps", "[]") or "[]")
-    except json.JSONDecodeError:
-        d["steps"] = []
+    """Decode the steps JSON column before constructing BenchmarkResult.
+
+    Accepts steps as a JSON string (raw DB row), an already-decoded list
+    (e.g. from get_result), or missing/None."""
+    steps = d.get("steps")
+    if isinstance(steps, str):
+        try:
+            steps = json.loads(steps or "[]")
+        except json.JSONDecodeError:
+            steps = []
+    d["steps"] = steps if isinstance(steps, list) else []
     return BenchmarkResult(**d)
 
 
