@@ -38,7 +38,7 @@ observability:
 
 agents:
   - name: planner
-    model: llama-swap/qwen36-35b-a3b-q8:thinking
+    model: llama-swap/qwen36-35b-a3b-q8
     thinking: high
     color: "#a78bfa"                 # optional hex — the agent's lane color in the visualizer
     purpose: Turn a request into a plan the builder can implement without asking questions.
@@ -62,7 +62,7 @@ agents:
       - subagent_remove
 
   - name: builder
-    model: llama-swap/thinkingcap-27b-q8:thinking
+    model: llama-swap/thinkingcap-27b-q8
     color: "#22d3ee"
     purpose: Implement the plan exactly; report every changed file in the envelope.
     prompt_engineering:
@@ -80,7 +80,7 @@ agents:
       - write
 
   - name: scout
-    model: llama-swap/nemotron-b30-a3b-q4
+    model: llama-swap/qwen36-35b-a3b-q8
     color: "#fbbf24"
     purpose: Find and report where things live; change nothing.
     prompt_engineering:
@@ -124,7 +124,7 @@ agents:
       - write
 
   - name: documenter
-    model: llama-swap/qwen36-35b-a3b-q8:thinking
+    model: llama-swap/qwen36-35b-a3b-q8
     color: "#e879f9"
     purpose: Write up the change that was just made, from the diff; document only.
     prompt_engineering:
